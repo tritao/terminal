@@ -106,6 +106,17 @@ dependencies other than the native OS libraries for each OS.
 ./build.sh -g
 ```
 
+### Meson
+
+The terminal can also be built as a Meson subproject. When building it from a
+Pragtical checkout, enable it with `-Dnative_plugins=terminal`; for a
+standalone checkout with the Pragtical source submodule initialized, use:
+
+```
+meson setup build -Dapi_include_dir=lib/pragtical/resources/include
+meson compile -C build
+```
+
 ### Linux -> Windows
 
 ```

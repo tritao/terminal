@@ -1,0 +1,12 @@
+option(
+  'api_include_dir',
+  type: 'string',
+  value: '',
+  description: 'Path to the Pragtical plugin API headers for standalone builds'
+)
+option(
+  'data_dir',
+  type: 'string',
+  value: 'share/pragtical',
+  description: 'Pragtical data installation directory'
+)
