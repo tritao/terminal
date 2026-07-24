@@ -30,7 +30,9 @@ if host_machine.system() != 'windows'
   terminal_dependencies += cc.find_library('util', required: true)
 endif
 
-shared_module(
+pragtical_native_plugin_module = 'plugins.terminal.libterminal'
+pragtical_native_plugin_root = meson.current_source_dir()
+pragtical_native_plugin_target = shared_module(
   'terminal',
   'src/libterminal.c',
   dependencies: terminal_dependencies,
