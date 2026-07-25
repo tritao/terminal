@@ -42,6 +42,8 @@ can be accessed by `ctrl+shift+<key>` when the terminal has focus.
 The terminal plugin is also a frontend that can consume sessions supplied by
 other plugins. A session provides `id`, `status`, `write`, `resize`,
 `poll_events`, `request_replay`, `terminate`, `detach`, and `close` methods.
+The session tracks the last applied byte offset and exposes `attach`,
+`offset`, and `apply_checkpoint` for reconnect-aware frontends.
 The view does not need to know whether the session is local or remote.
 
 ```lua
@@ -58,6 +60,19 @@ Providers can supply the same frontend through `open_session`:
 ```lua
 terminal.open_session(provider_session)
 ```
+
+Session output is byte-offset ordered. Providers may emit `checkpoint` events
+followed by `output` events, and the frontend drops duplicate output while
+requesting replay when it detects a gap:
+
+```lua
+{ type = "checkpoint", runtime_id = "...", offset = 1048576 }
+{ type = "output", runtime_id = "...", offset = 1048576, data = "..." }
+```
+
+A checkpoint can provide a restored emulator or a `restore_checkpoint` handler
+when constructing the session. Checkpoint storage and replay policy remain
+provider responsibilities.
 
 Launch profiles are terminal-owned and may be registered by plugins:
 

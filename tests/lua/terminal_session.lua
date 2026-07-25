@@ -32,6 +32,93 @@ test.describe("terminal session boundary", function()
     test.ok(detached)
   end)
 
+  test.test("tracks output offsets and requests replay for gaps", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local replay_offsets = {}
+    local pending = {
+      { type = "output", runtime_id = "offset-session", offset = 0, data = "abc" },
+      { type = "output", runtime_id = "offset-session", offset = 0, data = "abc" },
+      { type = "output", runtime_id = "offset-session", offset = 7, data = "later" },
+      { type = "status", runtime_id = "offset-session", status = "running" }
+    }
+    local session = terminal.Session {
+      id = "offset-session",
+      capabilities = { replay = true },
+      write = function() end,
+      resize = function() end,
+      request_replay = function(_, offset) replay_offsets[#replay_offsets + 1] = offset end,
+      poll_events = function()
+        local events = pending
+        pending = {}
+        return events
+      end
+    }
+
+    local events = session:poll_events()
+    test.equal(session:offset(), 3)
+    test.equal(session.duplicate_events, 1)
+    test.equal(session.gap_events, 1)
+    test.same(replay_offsets, { 3 })
+    test.equal(#events, 3)
+    test.equal(events[1].type, "output")
+    test.equal(events[2].type, "gap")
+    test.equal(events[3].type, "status")
+    test.equal(events[2].offset, 3)
+    test.equal(events[2].received_offset, 7)
+  end)
+
+  test.test("attaches once and applies a checkpoint before live output", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local attached, detached = 0, 0
+    local replay_offsets = {}
+    local checkpoint = terminal.new_emulator { columns = 20, rows = 4 }
+    checkpoint:feed("checkpoint\r\n")
+    local pending = {
+      { type = "checkpoint", runtime_id = "remote-session", offset = 0,
+        data = "opaque-checkpoint" },
+      { type = "output", runtime_id = "remote-session", offset = 0, data = "live" }
+    }
+    local session = terminal.Session {
+      id = "remote-session",
+      emulator = checkpoint,
+      capabilities = { replay = true, events_applied = false },
+      attach = function() attached = attached + 1 end,
+      write = function() end,
+      resize = function() end,
+      restore_checkpoint = function(_, event, emulator)
+        test.equal(event.data, "opaque-checkpoint")
+        emulator:reset()
+        emulator:feed("checkpoint\r\n")
+        return emulator
+      end,
+      request_replay = function(_, offset) replay_offsets[#replay_offsets + 1] = offset end,
+      detach = function() detached = detached + 1 end,
+      poll_events = function()
+        local event = table.remove(pending, 1)
+        return event and { event } or {}
+      end
+    }
+
+    local view = terminal.open_session(session, { activate = false })
+    view:shift_selection_update()
+    view:shift_selection_update()
+    test.equal(attached, 1)
+    test.equal(session:offset(), 4)
+    test.same(replay_offsets, { 0 })
+    test.ok(view.terminal == checkpoint)
+
+    local found_live = false
+    for _, line in ipairs(view.terminal:lines()) do
+      for i = 2, #line, 2 do
+        if line[i]:find("live", 1, true) then found_live = true end
+      end
+    end
+    test.ok(found_live, "checkpoint emulator did not receive live output")
+    view:close()
+    test.equal(detached, 1)
+    checkpoint:close()
+  end)
+
   test.test("normalizes local launch specifications and reports capabilities", function()
     test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
     local spec = terminal.normalize_launch_spec { command = "/bin/sh", cwd = "/tmp" }

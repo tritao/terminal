@@ -363,16 +363,50 @@ function TerminalView:new(options)
   self.focused = false
   self.modified_since_last_focus = false
   self.mouse_buttons = {}
+  self.session_attached = false
+end
+
+
+function TerminalView:attach_session()
+  if not self.session or self.session_attached then return true end
+  if self.session.attach then
+    local result, message = self.session:attach()
+    if result == false then
+      self.session_error = message
+      return false
+    end
+  end
+  self.session_attached = true
+  self.session_error = nil
+  return true
 end
 
 
 function TerminalView:shift_selection_update()
   local shifts = 0
   if self.session then
+    if not self:attach_session() then return 0 end
     local events = self.session:poll_events()
+    local capabilities = self.session.capabilities or {}
     for _, event in ipairs(events) do
-      if event.type == "output" and not self.session.capabilities.events_applied then
+      if event.type == "output" and not capabilities.events_applied then
         shifts = shifts + (self.emulator:feed(event.data) or 0)
+      elseif event.type == "checkpoint" then
+        local emulator, message
+        if self.session.apply_checkpoint then
+          emulator, message = self.session:apply_checkpoint(event, self.emulator)
+        else
+          emulator, message = false, "session does not support checkpoints"
+        end
+        if emulator then
+          self.emulator = emulator
+          self.terminal = emulator
+          self.checkpoint_error = nil
+        else
+          self.checkpoint_error = message
+        end
+      elseif event.type == "gap" then
+        self.replay_event = event
       elseif event.type == "status" and event.status == "exited" then
         self.exit_event = event
       end
@@ -459,7 +493,7 @@ function TerminalView:spawn()
     debug = self.options.debug
   }
   self.terminal = self.emulator
-  if self.session.attach then self.session:attach() end
+  self:attach_session()
   self:start_background()
 end
 
@@ -468,6 +502,7 @@ function TerminalView:detach_session()
   if session then session:detach() end
   self.background_generation = (self.background_generation or 0) + 1
   self.session = nil
+  self.session_attached = false
   self.emulator = nil
   self.terminal = nil
   self.routine = nil
@@ -1358,7 +1393,9 @@ end
 
 local function open_session(session, options)
   options = options or {}
-  if not session or type(session.poll_events) ~= "function" then
+  if not session
+      or type(session.poll_events) ~= "function"
+      or type(session.apply_checkpoint) ~= "function" then
     session = Session(session)
   end
   local view_options = copy_map(options)
@@ -1381,7 +1418,7 @@ local function supported_capabilities()
     emulator = true,
     local_backend = true,
     profiles = true,
-    replay = false,
+    replay = true,
     persistent = false
   }
 end
