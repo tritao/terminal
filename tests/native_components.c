@@ -5,7 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -136,29 +138,43 @@ int main(void) {
 
   terminal_emulator_free(emulator);
 
+  if (terminal_runtime_new(0, 24, 100, "xterm-256color", "/bin/sh",
+      NULL, NULL, NULL))
+    return 11;
 #ifdef _WIN32
-  return 0;
+  const char* command = "cmd.exe";
+  const char* arguments[] = {
+    "cmd.exe", "/C", "echo native runtime output", NULL
+  };
+  const char* cwd = NULL;
 #else
-  const char* arguments[] = { "sh", "-c", "printf native-runtime-output", NULL };
-  const char* environment[] = { NULL };
+  const char* command = "/bin/sh";
+  const char* arguments[] = {
+    "sh", "-c", "printf '%s' \"$1\"", "sh", "native runtime output", NULL
+  };
+  const char* cwd = "/tmp";
+#endif
   terminal_runtime_t* runtime = terminal_runtime_new(
-    80, 24, 100, "xterm-256color", "/bin/sh", arguments, environment, "/tmp"
+    80, 24, 100, "xterm-256color", command, arguments, NULL, cwd
   );
   if (!runtime)
-    return 11;
+    return 12;
 
   int exited = 0;
-  for (int i = 0; i < 200 && !strstr(output, "native-runtime-output"); ++i) {
+  for (int i = 0; i < 200 && !strstr(output, "native runtime output"); ++i) {
     int shifts = 0;
     terminal_runtime_poll(runtime, collect_output, NULL, &shifts);
     int exit_code, signal;
     exited = terminal_runtime_exited(runtime, &exit_code, &signal);
-    if (exited && !strstr(output, "native-runtime-output"))
+    if (exited && i > 20 && !strstr(output, "native runtime output"))
       break;
+#ifdef _WIN32
+    Sleep(10);
+#else
     usleep(10000);
+#endif
   }
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
-  return strstr(output, "native-runtime-output") ? 0 : 12;
-#endif
+  return strstr(output, "native runtime output") ? 0 : 13;
 }
