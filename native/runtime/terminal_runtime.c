@@ -320,6 +320,7 @@ terminal_runtime_t* terminal_runtime_new(
     return NULL;
 
 #if _WIN32
+  (void)term;
   last_error_code = 0;
   HRESULT result = S_OK;
   SECURITY_ATTRIBUTES no_sec = {
