@@ -28,6 +28,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 #define TERMINAL_RUNTIME_CHUNK_SIZE 4096
 #define TERMINAL_RUNTIME_MAX_CHUNKS 10
@@ -110,6 +111,18 @@ static int windows_size_add(size_t* value, size_t addition) {
 }
 
 /* Quote one argument using the CommandLineToArgvW/CRT command-line rules. */
+static int windows_argument_needs_quotes(const wchar_t* argument) {
+  if (!*argument)
+    return 1;
+  for (const wchar_t* cursor = argument; *cursor; ++cursor) {
+    if (*cursor == L' ' || *cursor == L'\t' || *cursor == L'\n'
+        || *cursor == L'\v' || *cursor == L'\f' || *cursor == L'\r'
+        || *cursor == L'"')
+      return 1;
+  }
+  return 0;
+}
+
 static int windows_quoted_argument_length(const wchar_t* argument,
     size_t* length) {
   size_t result = 2;
@@ -169,6 +182,24 @@ static wchar_t* windows_append_quoted_argument(wchar_t* output,
   return output;
 }
 
+static int windows_argument_length(const wchar_t* argument, size_t* length) {
+  if (!windows_argument_needs_quotes(argument)) {
+    *length = wcslen(argument);
+    return 1;
+  }
+  return windows_quoted_argument_length(argument, length);
+}
+
+static wchar_t* windows_append_argument(wchar_t* output,
+    const wchar_t* argument) {
+  if (!windows_argument_needs_quotes(argument)) {
+    while (*argument)
+      *output++ = *argument++;
+    return output;
+  }
+  return windows_append_quoted_argument(output, argument);
+}
+
 static wchar_t* windows_build_command_line(const char* command,
     const char** arguments) {
   const char* values[TERMINAL_RUNTIME_MAX_ARGUMENTS] = {0};
@@ -193,7 +224,7 @@ static wchar_t* windows_build_command_line(const char* command,
       goto error;
     }
     size_t argument_length;
-    if (!windows_quoted_argument_length(wide_values[i], &argument_length)
+    if (!windows_argument_length(wide_values[i], &argument_length)
         || !windows_size_add(&command_line_length, argument_length)
         || (i + 1 < value_count
           && !windows_size_add(&command_line_length, 1))) {
@@ -217,7 +248,7 @@ static wchar_t* windows_build_command_line(const char* command,
   for (int i = 0; i < value_count; ++i) {
     if (i)
       *output++ = L' ';
-    output = windows_append_quoted_argument(output, wide_values[i]);
+    output = windows_append_argument(output, wide_values[i]);
   }
   *output = L'\0';
   for (int i = 0; i < value_count; ++i)
