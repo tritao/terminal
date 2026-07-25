@@ -37,6 +37,58 @@ or by running the `Terminal: Open Tab` command. It can be closed with `ctrl+shif
 Most commands that would normally be bound to `ctrl+<key>` in the editor
 can be accessed by `ctrl+shift+<key>` when the terminal has focus.
 
+### Embedding and session backends
+
+The terminal plugin is also a frontend that can consume sessions supplied by
+other plugins. A session provides `id`, `status`, `write`, `resize`,
+`poll_events`, `request_replay`, `terminate`, `detach`, and `close` methods.
+The view does not need to know whether the session is local or remote.
+
+```lua
+local terminal = require "plugins.terminal"
+
+terminal.open_local {
+  profile = "login",
+  cwd = project.path
+}
+```
+
+Providers can supply the same frontend through `open_session`:
+
+```lua
+terminal.open_session(provider_session)
+```
+
+Launch profiles are terminal-owned and may be registered by plugins:
+
+```lua
+terminal.register_profile("login", {
+  command = "/bin/bash",
+  args = { "--login" }
+})
+```
+
+The standalone emulator factory is available for providers that receive raw
+terminal output:
+
+```lua
+local emulator = terminal.new_emulator { columns = 100, rows = 30 }
+emulator:feed(bytes)
+```
+
+The native implementation is also exposed through editor-independent C
+libraries:
+
+* `native/emulator/terminal_emulator.h` for parsing, screen state, cursor,
+  scrollback, reset, and line iteration.
+* `native/runtime/terminal_runtime.h` for PTY/ConPTY launch, input, resize,
+  output polling, exit detection, and close.
+* `native/terminal_core.h` is the shared low-level bridge used by both.
+
+These libraries contain no Lua, Pragtical View, Workbench, IPC, or persistence
+dependencies. The Lua module uses the same native core, so local sessions and
+native consumers share parser, resize, and close semantics.
+
 ### Supported Shells
 
 The following shells are tested on each release to ensure that they actually

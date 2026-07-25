@@ -8,7 +8,9 @@ local View = require "core.view"
 local keymap = require "core.keymap"
 local StatusView = require "core.statusview"
 
-local terminal_native = require "plugins.terminal.libterminal"
+local Session = require "plugins.terminal.session"
+local Emulator = require "plugins.terminal.emulator"
+local LocalSession = require "plugins.terminal.local_backend"
 
 local prev_scale = SCALE
 local default_shell =  os.getenv("SHELL") or (PLATFORM == "Windows" and os.getenv("COMSPEC")) or (PLATFORM == "Windows" and "c:\\windows\\system32\\cmd.exe" or "sh")
@@ -40,6 +42,10 @@ local default_config = {
   delete = "\x1B[3~",
   -- the amount of lines you can emit before we start cutting them off
   scrollback_limit = 10000,
+  profiles = {
+    default = { command = default_shell },
+    login = { command = default_shell, args = { "--login" } }
+  },
   -- the default height of the console drawer
   drawer_height = 300,
   -- Use a different font from the code editor
@@ -336,7 +342,11 @@ end
 
 local TerminalView = View:extend()
 
-function TerminalView:get_name() return (self.modified_since_last_focus and "* " or "") .. (self.terminal and self.terminal:name() or "Terminal") end
+function TerminalView:get_name()
+  local name = self.terminal and self.terminal:name()
+    or (self.session and self.session:id()) or "Terminal"
+  return (self.modified_since_last_focus and "* " or "") .. name
+end
 function TerminalView:supports_text_input() return true end
 
 function TerminalView:new(options)
@@ -344,13 +354,9 @@ function TerminalView:new(options)
   options = common.merge(common.merge({}, config.plugins.terminal), options)
   self.size.y = options.drawer_height
   self.options = options
-  if PLATFORM == "Windows" then
-    local t = {}
-    for k,v in pairs(common.merge(terminal_native.getenv(), options.environment)) do
-      table.insert(t, k .. "=" .. v)
-    end
-    self.options.environment = table.concat(t, "\0") .. "\0\0"
-  end
+  self.session = options.session
+  self.emulator = options.emulator
+  self.terminal = self.emulator
   self.cursor = "ibeam"
   self.scrollable = true
   self.last_size = { x = self.size.x, y = self.size.y }
@@ -361,7 +367,18 @@ end
 
 
 function TerminalView:shift_selection_update()
-  local shifts = self.terminal:update()
+  local shifts = 0
+  if self.session then
+    local events = self.session:poll_events()
+    for _, event in ipairs(events) do
+      if event.type == "output" and not self.session.capabilities.events_applied then
+        shifts = shifts + (self.emulator:feed(event.data) or 0)
+      elseif event.type == "status" and event.status == "exited" then
+        self.exit_event = event
+      end
+    end
+    shifts = shifts + (self.session.last_shifts or 0)
+  end
   if shifts and not self.focused then self.modified_since_last_focus = true end
   if self.selection and shifts then
     self.selection[2] = self.selection[2] - shifts
@@ -374,17 +391,17 @@ function TerminalView:shift_selection_update()
 end
 
 
-function TerminalView:spawn()
-  local cwd = system.getcwd()
-  system.chdir(core.root_project().path)
-  self.terminal = terminal_native.new(self.columns, self.lines, self.options.scrollback_limit, self.options.term, self.options.shell, self.options.arguments, self.options.environment, self.options.debug)
-  system.chdir(cwd)
+function TerminalView:start_background()
+  if self.routine then return end
+  self.background_generation = (self.background_generation or 0) + 1
+  local generation = self.background_generation
   -- We make this weak so that any other method of closing the view gets caught up in the garbage collection and the coroutine doesn't count as a reference for gc purposes.
   local weak_table = { self = self }
   setmetatable(weak_table, { __mode = "v" })
-  self.routine = self.routine or core.add_background_thread(function()
+  self.routine = core.add_background_thread(function()
     local count = 0
-    while weak_table.self and weak_table.self.terminal do
+    while weak_table.self and weak_table.self.session
+      and weak_table.self.background_generation == generation do
       -- do not redraw when hidden
       if weak_table.self.size.y > 0 then
         core.redraw = weak_table.self:shift_selection_update() or core.redraw
@@ -416,6 +433,47 @@ function TerminalView:spawn()
   end)
 end
 
+function TerminalView:create_session()
+  local project = core.root_project()
+  return LocalSession {
+    id = self.options.id,
+    cwd = (project and project.path) or system.getcwd(),
+    columns = self.columns,
+    rows = self.lines,
+    command = self.options.shell,
+    args = self.options.arguments,
+    environment = self.options.environment,
+    term = self.options.term,
+    scrollback_limit = self.options.scrollback_limit,
+    debug = self.options.debug,
+    terminate_on_detach = self.options.terminate_on_detach
+  }
+end
+
+function TerminalView:spawn()
+  if not self.session then self.session = self:create_session() end
+  self.emulator = self.emulator or self.session.emulator or Emulator {
+    columns = self.columns, rows = self.lines,
+    scrollback_limit = self.options.scrollback_limit,
+    term = self.options.term, environment = self.options.environment,
+    debug = self.options.debug
+  }
+  self.terminal = self.emulator
+  if self.session.attach then self.session:attach() end
+  self:start_background()
+end
+
+function TerminalView:detach_session()
+  local session = self.session
+  if session then session:detach() end
+  self.background_generation = (self.background_generation or 0) + 1
+  self.session = nil
+  self.emulator = nil
+  self.terminal = nil
+  self.routine = nil
+  return session
+end
+
 
 ---Can be overriden by widgets to listen for scale change events to apply
 ---any neccesary changes in sizes, padding, etc...
@@ -443,7 +501,10 @@ function TerminalView:update()
       if not self.terminal then
         self:spawn()
       else
-        self.terminal:size(self.columns, self.lines)
+        self.session:resize(self.columns, self.lines)
+        if self.emulator ~= self.session.emulator then
+          self.emulator:resize(self.columns, self.lines)
+        end
         self.last_size = { x = self.size.x, y = self.size.y }
       end
     end
@@ -454,8 +515,8 @@ function TerminalView:update()
       self:input(self.deferred_input)
       self.deferred_input = nil
     end
-    local exited = self.terminal:exited()
-    if exited == false then
+    local status = self.session:status()
+    if status ~= "exited" and status ~= "closed" and status ~= "error" then
       self.cursor = "ibeam"
       if self.terminal:mouse_tracking_mode()
          or self.v_scrollbar.hovering.track
@@ -465,7 +526,7 @@ function TerminalView:update()
       if (core.active_view == self and not self.focused) or (core.active_view ~= self and self.focused) then
         self.focused = core.active_view == self
         self.modified_since_last_focus = false
-        self.terminal:focused(self.focused)
+        self.emulator:focused(self.focused)
       end
       local x, y, mode = self.terminal:cursor()
       if mode == "blinking" then
@@ -488,9 +549,8 @@ function TerminalView:update()
       self.v_scrollbar:set_percent(1.0 - (scrollback / total_scrollback))
       self.v_scrollbar:update()
     else
-      core.add_thread(function()
-        self:close()
-      end)
+      self.cursor = "arrow"
+      core.redraw = true
     end
   end
   self.last_font_size = self.options.font:get_size()
@@ -829,8 +889,8 @@ end
 
 
 function TerminalView:input(text)
-  if self.terminal then
-    self.terminal:input(text)
+  if self.session and self.emulator then
+    self.session:write(text)
     if self.terminal:scrollback() ~= 0 then self.terminal:scrollback(0) end
     self:shift_selection_update()
     core.redraw = true
@@ -845,14 +905,20 @@ function TerminalView:on_text_input(text)
   return self:input(text)
 end
 
-
-function TerminalView:close()
-  if self.terminal then self.terminal:close() end
-  local node = core.root_view.root_node:get_node_for_view(self)
-  node:close_view(core.root_view.root_node, self)
-  if core.terminal_view == self then core.terminal_view = nil end
+function TerminalView:restart()
+  if self.session then self.session:terminate({ restart = true }) end
+  self.session = nil
+  self.emulator = nil
   self.terminal = nil
   self.routine = nil
+  self:update()
+end
+
+function TerminalView:close()
+  if self.session then self:detach_session() end
+  local node = core.root_view.root_node:get_node_for_view(self)
+  if node then node:close_view(core.root_view.root_node, self) end
+  if core.terminal_view == self then core.terminal_view = nil end
 end
 
 
@@ -892,6 +958,13 @@ function TerminalView:get_text(line1, col1, line2, col2)
     end
   end
   return table.concat(full_buffer)
+end
+
+local function adjust_font_size(view, delta)
+  local size = math.max(view.options.font:get_size() + delta, 1)
+  view.options.font = view.options.font:copy(size)
+  view.options.bold_font = view.options.font:copy(size, { smoothing = true })
+  view:update()
 end
 
 
@@ -995,6 +1068,26 @@ command.add(active_terminal_predicate, {
   ["terminal:file-separator"] = function(view) view:input("\x1C") end,
   ["terminal:group-separator"] = function(view) view:input("\x1D") end,
   ["terminal:clear"] = function(view) view.terminal:clear() view:input(view.options.newline) end,
+  ["terminal:clear-scrollback"] = function(view) view.terminal:clear_scrollback() end,
+  ["terminal:reset"] = function(view) view.terminal:reset() end,
+  ["terminal:select-all"] = function(view)
+    local _, total_scrollback = view.terminal:scrollback()
+    view.selection = { 0, -total_scrollback, view.columns, view.lines - 1 }
+    view.terminal:scrollback(0)
+    core.redraw = true
+  end,
+  ["terminal:send-interrupt"] = function(view) view:input("\x03") end,
+  ["terminal:send-eof"] = function(view) view:input("\x04") end,
+  ["terminal:increase-font-size"] = function(view) adjust_font_size(view, 1) end,
+  ["terminal:decrease-font-size"] = function(view) adjust_font_size(view, -1) end,
+  ["terminal:restart-local-session"] = function(view)
+    if view.session and view.session.capabilities.local_process then view:restart() end
+  end,
+  ["terminal:new"] = function()
+    local view = TerminalView(config.plugins.terminal)
+    core.root_view:get_active_node_default():add_view(view)
+    core.set_active_view(view)
+  end,
   ["terminal:close-tab"] = function(view) view:close() end
 });
 if system.get_primary_selection then -- check for master vs. 2.1.7
@@ -1107,6 +1200,7 @@ local keys = {
   ["alt+backspace"] = "terminal:alt-backspace",
   ["ctrl+shift+c"] = "terminal:copy",
   ["ctrl+shift+v"] = "terminal:paste",
+  ["ctrl+shift+a"] = "terminal:select-all",
   ["mclick"] = "terminal:primary-paste",
   ["wheel"] = "terminal:scroll",
   ["tab"] = "terminal:tab",
@@ -1194,6 +1288,112 @@ if config.plugins.terminal.inversion_key then
   keymap.add(settings)
 end
 
+local function copy_array(values)
+  local result = {}
+  for i, value in ipairs(values or {}) do result[i] = value end
+  return result
+end
+
+local function copy_map(values)
+  local result = {}
+  for key, value in pairs(values or {}) do result[key] = value end
+  return result
+end
+
+local function normalize_launch_spec(spec)
+  spec = spec or {}
+  local profile = spec.profile
+  if type(profile) == "string" then
+    profile = config.plugins.terminal.profiles[profile]
+    if not profile then error("unknown terminal profile: " .. spec.profile) end
+  end
+  profile = profile or {}
+
+  local environment = copy_map(profile.environment)
+  for key, value in pairs(spec.environment or {}) do environment[key] = value end
+  local command = spec.command or spec.executable or spec.shell
+    or profile.command or profile.executable or profile.shell
+    or config.plugins.terminal.shell
+  local args = spec.args or spec.arguments or profile.args or profile.arguments
+    or config.plugins.terminal.arguments
+
+  local result = copy_map(spec)
+  result.profile = nil
+  result.command = command
+  result.executable = command
+  result.shell = command
+  result.args = copy_array(args)
+  result.arguments = copy_array(args)
+  result.environment = environment
+  result.cwd = spec.cwd or profile.cwd
+  result.term = spec.term or profile.term or config.plugins.terminal.term
+  result.scrollback_limit = spec.scrollback_limit or profile.scrollback_limit
+    or config.plugins.terminal.scrollback_limit
+  result.debug = spec.debug
+  if result.debug == nil then result.debug = profile.debug or config.plugins.terminal.debug end
+  if result.terminate_on_detach == nil then
+    result.terminate_on_detach = profile.terminate_on_detach
+  end
+  return result
+end
+
+local function register_profile(name, profile)
+  if type(name) ~= "string" or name == "" then error("terminal profile name is required") end
+  if type(profile) ~= "table" then error("terminal profile must be a table") end
+  config.plugins.terminal.profiles[name] = copy_map(profile)
+  return config.plugins.terminal.profiles[name]
+end
+
+local function new_emulator(options)
+  return Emulator(options)
+end
+
+local function open_view(view, options)
+  options = options or {}
+  local node = options.node or core.root_view:get_active_node_default()
+  node:add_view(view)
+  if options.activate ~= false then core.set_active_view(view) end
+  return view
+end
+
+local function open_session(session, options)
+  options = options or {}
+  if not session or type(session.poll_events) ~= "function" then
+    session = Session(session)
+  end
+  local view_options = copy_map(options)
+  view_options.node = nil
+  view_options.activate = nil
+  view_options.session = session
+  view_options.emulator = options.emulator or session.emulator
+  return open_view(TerminalView(view_options), options)
+end
+
+local function open_local(spec)
+  local launch = normalize_launch_spec(spec)
+  launch.backend = "local"
+  return open_view(TerminalView(launch), spec)
+end
+
+local function supported_capabilities()
+  return {
+    sessions = true,
+    emulator = true,
+    local_backend = true,
+    profiles = true,
+    replay = false,
+    persistent = false
+  }
+end
+
 return {
-  class = TerminalView
+  class = TerminalView,
+  Session = Session,
+  Emulator = Emulator,
+  open_local = open_local,
+  open_session = open_session,
+  new_emulator = new_emulator,
+  register_profile = register_profile,
+  normalize_launch_spec = normalize_launch_spec,
+  supported_capabilities = supported_capabilities
 }
