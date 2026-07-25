@@ -144,7 +144,7 @@ int main(void) {
 #ifdef _WIN32
   const char* command = "cmd.exe";
   const char* arguments[] = {
-    "cmd.exe", "/C", "echo native runtime output", NULL
+    "cmd.exe", "/S", "/C", "echo native runtime output", NULL
   };
   const char* cwd = NULL;
 #else
