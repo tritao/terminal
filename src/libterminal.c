@@ -1,125 +1,112 @@
 #define PRAGTICAL_PLUGIN_ENTRYPOINT
 #include <pragtical_plugin_api.h>
-#include "../native/terminal_core.c"
+#include "../native/terminal_core.h"
 
-static void push_style(lua_State* L, buffer_styling_t style, int* group) {
-  uint64_t packed = (
-    ((uint64_t)style.foreground.attributes << 56) |
-    ((uint64_t)style.foreground.r << 48) |
-    ((uint64_t)style.foreground.g << 40) |
-    ((uint64_t)style.foreground.b << 32) |
-    ((uint64_t)style.background.attributes << 24) |
-    ((uint64_t)style.background.r << 16) |
-    ((uint64_t)style.background.g << 8) |
-    ((uint64_t)style.background.b << 0)
-  );
-  char hex_string[24];
-  sprintf(hex_string, "%" PRIu64, packed);
-  lua_pushstring(L, hex_string);
-  lua_rawseti(L, -2, ++(*group));
-}
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
-static void output_line(lua_State* L, buffer_char_t* start, buffer_char_t* end, int overflows) {
-  lua_newtable(L);
-  int group = 0;
-  int text_buffer_size = (int)(end - start) * 4 + 4;
-  char* text_buffer = calloc(text_buffer_size, 1);
-  if (!text_buffer)
-    luaL_error(L, "failed to allocate terminal line buffer");
+#define TERMINAL_CHUNK_SIZE 4096
 
-  buffer_char_t* line_start = start;
-  buffer_char_t* last_nonzero = line_start - 1;
-  for (buffer_char_t* cell = start; cell < end; ++cell) {
-    if (cell->codepoint != 0)
-      last_nonzero = cell;
-  }
-  if (last_nonzero < line_start) {
-    push_style(L, start->styling, &group);
-    lua_pushstring(L, overflows ? "" : "\n");
-    lua_rawseti(L, -2, ++group);
-    free(text_buffer);
-    return;
-  }
+typedef struct terminal_binding {
+  terminal_core_t* core;
+} terminal_binding_t;
 
-  buffer_styling_t style = start->styling;
-  while (1) {
-    int block_size = 0;
-    while (start < end && start->styling.value == style.value && start <= last_nonzero) {
-      block_size += codepoint_to_utf8(start->codepoint != 0 ? start->codepoint : ' ', &text_buffer[block_size]);
-      ++start;
-    }
-
-    if (start > last_nonzero || start >= end || start->styling.value != style.value) {
-      push_style(L, style, &group);
-      lua_pushlstring(L, text_buffer, block_size);
-      if (!overflows && start > last_nonzero) {
-        lua_pushliteral(L, "\n");
-        lua_concat(L, 2);
-      }
-      lua_rawseti(L, -2, ++group);
-      if (start > last_nonzero)
-        break;
-      style = start->styling;
-    }
-  }
-  free(text_buffer);
-}
-
-
-static terminal_t* lua_toterminal(lua_State* L, int index) {
+static terminal_binding_t* lua_toterminal(lua_State* L, int index) {
   lua_getfield(L, index, "__terminal");
-  terminal_t* terminal = (terminal_t*)lua_touserdata(L, -1);
+  terminal_binding_t* terminal = (terminal_binding_t*)lua_touserdata(L, -1);
   lua_pop(L, 1);
   return terminal;
 }
 
-static int f_terminal_lines(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  int start = -terminal->scrollback_position;
-  if (lua_gettop(L) >= 2)
-    start = luaL_checkinteger(L, 2);
-  int end = start + terminal->lines;
-  if (lua_gettop(L) >= 3)
-    end = luaL_checkinteger(L, 3) + 1;
-  lua_newtable(L);
-
-  int total_lines = 0;
-  int remaining_lines = end - start;
-  view_t* view = &terminal->views[terminal->current_view];
-  if (terminal->current_view == VIEW_NORMAL_BUFFER && start < 0) {
-    int top_offset = terminal->scrollback_target_top_offset;
-    int offset = -start;
-    backbuffer_page_t* current_backbuffer = terminal_find_scrollback_page(terminal, terminal->scrollback_target, &offset, &top_offset);
-    int lines_into_buffer = top_offset - offset;
-    while (current_backbuffer) {
-      int* backbuffer_overflows = (int*)&current_backbuffer->buffer[LIBTERMINAL_BACKBUFFER_PAGE_LINES*current_backbuffer->columns];
-      for (int y = lines_into_buffer; y < current_backbuffer->line; ++y) {
-        output_line(L, &current_backbuffer->buffer[y * current_backbuffer->columns], &current_backbuffer->buffer[(y+1) * current_backbuffer->columns], backbuffer_overflows[y]);
-        lua_rawseti(L, -2, ++total_lines);
-        if (remaining_lines == 0)
-          break;
-      }
-      current_backbuffer = current_backbuffer->next;
-      lines_into_buffer = 0;
-    }
-    start = 0;
-  }
-  if (remaining_lines > 0) {
-    remaining_lines = min(remaining_lines, terminal->lines);
-    for (int y = 0; y < remaining_lines; ++y) {
-      output_line(L, &view->buffer[(y + start) * terminal->columns], &view->buffer[(y + start + 1) * terminal->columns], view->overflows[y + start]);
-      lua_rawseti(L, -2, ++total_lines);
-    }
-  }
-  return 1;
+static void push_style(lua_State* L, uint64_t style, int* group) {
+  char value[24];
+  snprintf(value, sizeof(value), "%" PRIu64, style);
+  lua_pushstring(L, value);
+  lua_rawseti(L, -2, ++(*group));
 }
 
+typedef struct terminal_lines_context {
+  lua_State* L;
+  int result_index;
+  int line_index;
+  int current_row;
+  int group;
+  int line_count;
+  int overflow;
+  int last_text_index;
+  int has_line;
+} terminal_lines_context_t;
+
+static void finish_line(terminal_lines_context_t* context) {
+  lua_State* L = context->L;
+  if (!context->has_line)
+    return;
+
+  if (!context->overflow && context->last_text_index > 0) {
+    lua_rawgeti(L, context->line_index, context->last_text_index);
+    lua_pushliteral(L, "\n");
+    lua_concat(L, 2);
+    lua_rawseti(L, context->line_index, context->last_text_index);
+  }
+  lua_rawseti(L, context->result_index, ++context->line_count);
+  context->has_line = 0;
+}
+
+static void push_line_segment(int row, uint64_t style, const char* text,
+    int length, int overflow, void* data) {
+  terminal_lines_context_t* context = (terminal_lines_context_t*)data;
+  lua_State* L = context->L;
+  if (!context->has_line || row != context->current_row) {
+    finish_line(context);
+    lua_newtable(L);
+    context->line_index = lua_gettop(L);
+    context->current_row = row;
+    context->group = 0;
+    context->overflow = overflow;
+    context->last_text_index = 0;
+    context->has_line = 1;
+  }
+
+  push_style(L, style, &context->group);
+  lua_pushlstring(L, text, (size_t)length);
+  lua_rawseti(L, context->line_index, ++context->group);
+  context->last_text_index = context->group;
+  context->overflow = overflow;
+}
+
+static int f_terminal_lines(lua_State* L) {
+  terminal_binding_t* terminal = lua_toterminal(L, 1);
+  int rows;
+  terminal_core_dimensions(terminal->core, NULL, &rows);
+  int current, total;
+  terminal_core_scrollback(terminal->core, -1, &current, &total);
+  (void)total;
+
+  int start = -current;
+  if (lua_gettop(L) >= 2)
+    start = luaL_checkinteger(L, 2);
+  int end = start + rows;
+  if (lua_gettop(L) >= 3)
+    end = luaL_checkinteger(L, 3) + 1;
+
+  lua_newtable(L);
+  terminal_lines_context_t context = {
+    .L = L,
+    .result_index = lua_gettop(L),
+  };
+  terminal_core_for_each_line(terminal->core, start, end - 1,
+    push_line_segment, &context);
+  finish_line(&context);
+  return 1;
+}
 
 #if _WIN32
 static const char* lua_toutf8(lua_State* L, LPCWSTR str) {
   int len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
   if (len > 0) {
-    char* output = (char *) malloc(sizeof(char) * len);
+    char* output = (char*)malloc(sizeof(char) * len);
     if (output) {
       len = WideCharToMultiByte(CP_UTF8, 0, str, -1, output, len, NULL, NULL);
       if (len) {
@@ -135,56 +122,65 @@ static const char* lua_toutf8(lua_State* L, LPCWSTR str) {
 #endif
 
 static int f_terminal_new(lua_State* L) {
-  int x = luaL_checkinteger(L, 1);
-  int y = luaL_checkinteger(L, 2);
+  int columns = luaL_checkinteger(L, 1);
+  int rows = luaL_checkinteger(L, 2);
   int scrollback_limit = luaL_checkinteger(L, 3);
-  const char* term_env = luaL_checkstring(L, 4);
-  const char* path = luaL_checkstring(L, 5);
+  const char* term = luaL_checkstring(L, 4);
+  const char* command = luaL_checkstring(L, 5);
   char* arguments[256] = {0};
   char* environment[256] = {0};
-  arguments[0] = (char*)path;
-  arguments[1] = NULL;
+  arguments[0] = (char*)command;
+
   if (lua_type(L, 6) == LUA_TTABLE) {
     for (int i = 0; i < 255; ++i) {
-      lua_rawgeti(L, 6, i+1);
-      if (!lua_isnil(L, -1)) {
-        const char* str = luaL_checkstring(L, -1);
-        arguments[i+1] = strdup(str);
+      lua_rawgeti(L, 6, i + 1);
+      if (lua_isnil(L, -1)) {
         lua_pop(L, 1);
-      } else {
-        lua_pop(L, 1);
-        arguments[i+1] = NULL;
         break;
       }
-    }
-  }
-  #if _WIN32
-    size_t envlen;
-    const char* env = luaL_checklstring(L, 7, &envlen);
-    LPWSTR utf16_env = calloc(envlen, sizeof(WCHAR));
-    MultiByteToWideChar(CP_UTF8, 0, env, envlen, utf16_env, envlen);
-    environment[0] = (char*) utf16_env;
-  #else
-    luaL_checktype(L, 7, LUA_TTABLE);
-    lua_pushnil(L);
-    int i = 0;
-    while (lua_next(L, 7) != 0 && i < 255) {
-      environment[i] = strdup(lua_tostring(L, -2));
-      environment[i+1] = strdup(lua_tostring(L, -1));
-      i = i + 2;
+      arguments[i + 1] = strdup(luaL_checkstring(L, -1));
       lua_pop(L, 1);
     }
-  #endif
-  int debug = lua_toboolean(L, 8);
+  }
+
+#if _WIN32
+  size_t environment_length;
+  const char* environment_string = luaL_checklstring(L, 7, &environment_length);
+  LPWSTR utf16_environment = calloc(environment_length, sizeof(WCHAR));
+  if (!utf16_environment)
+    return luaL_error(L, "failed to allocate terminal environment");
+  MultiByteToWideChar(CP_UTF8, 0, environment_string, environment_length,
+    utf16_environment, environment_length);
+  environment[0] = (char*)utf16_environment;
+#else
+  luaL_checktype(L, 7, LUA_TTABLE);
+  lua_pushnil(L);
+  int environment_index = 0;
+  while (lua_next(L, 7) != 0 && environment_index < 255) {
+    environment[environment_index++] = strdup(lua_tostring(L, -2));
+    environment[environment_index++] = strdup(lua_tostring(L, -1));
+    lua_pop(L, 1);
+  }
+#endif
+
   const char* cwd = lua_gettop(L) >= 9 ? luaL_optstring(L, 9, NULL) : NULL;
-  terminal_t* terminal = terminal_core_new(x, y, scrollback_limit, term_env, path, (const char**)arguments, (const char**)environment, cwd);
+  terminal_core_t* core = terminal_core_new(columns, rows, scrollback_limit,
+    term, command, (const char**)arguments, (const char**)environment, cwd);
   for (int i = 1; i < 256 && arguments[i]; ++i)
     free(arguments[i]);
   for (int i = 0; i < 256 && environment[i]; ++i)
     free(environment[i]);
-  if (!terminal)
-    return luaL_error(L, "error creating terminal: %s", terminal_get_last_error());
-  terminal->debug = debug;
+  if (!core)
+    return luaL_error(L, "error creating terminal: %s", terminal_core_last_error());
+
+  terminal_binding_t* terminal = calloc(1, sizeof(*terminal));
+  if (!terminal) {
+    terminal_core_free(core);
+    return luaL_error(L, "failed to allocate terminal binding");
+  }
+  terminal->core = core;
+  terminal_core_set_debug(core, lua_toboolean(L, 8));
+
   lua_newtable(L);
   lua_pushlightuserdata(L, terminal);
   lua_setfield(L, -2, "__terminal");
@@ -194,50 +190,55 @@ static int f_terminal_new(lua_State* L) {
 
 #if _WIN32
 static int f_terminal_getenv(lua_State* L) {
-  LPWCH system_env = GetEnvironmentStringsW(), envp = system_env;
+  LPWCH system_env = GetEnvironmentStringsW();
+  LPWCH envp = system_env;
   lua_newtable(L);
   int table = lua_gettop(L);
   while (wcslen(envp) > 0) {
-    const char* str = lua_toutf8(L, envp);
-    if (str) {
-      const char* equal = strstr(str, "=");
-      lua_pushlstring(L, str, equal - str);
+    const char* string = lua_toutf8(L, envp);
+    if (string) {
+      const char* equal = strstr(string, "=");
+      lua_pushlstring(L, string, equal - string);
       lua_pushstring(L, equal + 1);
       lua_rawset(L, table);
       lua_pop(L, 1);
     }
     envp += wcslen(envp) + 1;
   }
-  FreeEnvironmentStringsW(system_env);
+  FreeEnvironmentStrings(system_env);
   return 1;
 }
 #endif
 
-
 static int f_terminal_gc(lua_State* L) {
-  terminal_core_free(lua_toterminal(L, 1));
+  terminal_binding_t* terminal = lua_toterminal(L, 1);
+  if (terminal) {
+    terminal_core_free(terminal->core);
+    free(terminal);
+  }
   return 0;
 }
 
 static int f_terminal_close(lua_State* L) {
-  lua_pushinteger(L, terminal_core_close(lua_toterminal(L, 1)));
+  terminal_binding_t* terminal = lua_toterminal(L, 1);
+  lua_pushinteger(L, terminal_core_close(terminal->core));
   return 1;
 }
 
-typedef struct {
+typedef struct terminal_chunk_buffer {
   char* data;
   size_t length;
   size_t capacity;
   int failed;
 } terminal_chunk_buffer_t;
 
-static void chunk_update(char* buf, int len, void* data) {
-  terminal_chunk_buffer_t* chunks = (terminal_chunk_buffer_t*)data;
-  if (chunks->failed || len <= 0)
+static void chunk_update(char* data, int length, void* user_data) {
+  terminal_chunk_buffer_t* chunks = (terminal_chunk_buffer_t*)user_data;
+  if (chunks->failed || length <= 0)
     return;
-  size_t required = chunks->length + (size_t)len;
+  size_t required = chunks->length + (size_t)length;
   if (required > chunks->capacity) {
-    size_t capacity = chunks->capacity ? chunks->capacity : LIBTERMINAL_CHUNK_SIZE;
+    size_t capacity = chunks->capacity ? chunks->capacity : TERMINAL_CHUNK_SIZE;
     while (capacity < required)
       capacity *= 2;
     char* buffer = realloc(chunks->data, capacity);
@@ -248,13 +249,15 @@ static void chunk_update(char* buf, int len, void* data) {
     chunks->data = buffer;
     chunks->capacity = capacity;
   }
-  memcpy(&chunks->data[chunks->length], buf, (size_t)len);
+  memcpy(&chunks->data[chunks->length], data, (size_t)length);
   chunks->length = required;
 }
-static int f_terminal_update(lua_State* L){
-  int status, total_shifts = 0;
+
+static int f_terminal_update(lua_State* L) {
+  int total_shifts = 0;
   terminal_chunk_buffer_t chunks = {0};
-  status = terminal_core_update(lua_toterminal(L, 1), chunk_update, &chunks, &total_shifts);
+  int status = terminal_core_update(lua_toterminal(L, 1)->core,
+    chunk_update, &chunks, &total_shifts);
   if (chunks.failed) {
     free(chunks.data);
     return luaL_error(L, "failed to buffer terminal output");
@@ -263,39 +266,33 @@ static int f_terminal_update(lua_State* L){
     lua_pushinteger(L, total_shifts);
   else
     lua_pushboolean(L, 0);
-  if (chunks.length > 0)
-    lua_pushlstring(L, chunks.data, chunks.length);
-  else
-    lua_pushliteral(L, "");
+  lua_pushlstring(L, chunks.data ? chunks.data : "", chunks.length);
   free(chunks.data);
   return 2;
 }
 
 static int f_terminal_input(lua_State* L) {
-  size_t len;
-  const char* str = luaL_checklstring(L, 2, &len);
-  lua_pushinteger(L, terminal_core_feed(lua_toterminal(L, 1), str, (int)len));
+  size_t length;
+  const char* data = luaL_checklstring(L, 2, &length);
+  lua_pushinteger(L, terminal_core_feed(lua_toterminal(L, 1)->core,
+    data, (int)length));
   return 1;
 }
 
 static int f_terminal_size(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  if (lua_gettop(L) > 1) {
-    int x = luaL_checkinteger(L, 2), y = luaL_checkinteger(L, 3);
-    terminal_core_resize(terminal, x, y);
-  }
-  int columns, lines;
-  terminal_core_dimensions(terminal, &columns, &lines);
+  terminal_core_t* terminal = lua_toterminal(L, 1)->core;
+  if (lua_gettop(L) > 1)
+    terminal_core_resize(terminal, luaL_checkinteger(L, 2), luaL_checkinteger(L, 3));
+  int columns, rows;
+  terminal_core_dimensions(terminal, &columns, &rows);
   lua_pushinteger(L, columns);
-  lua_pushinteger(L, lines);
+  lua_pushinteger(L, rows);
   return 2;
 }
 
-
 static int f_terminal_exited(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
   int exit_code, signal;
-  if (terminal_core_exited(terminal, &exit_code, &signal)) {
+  if (terminal_core_exited(lua_toterminal(L, 1)->core, &exit_code, &signal)) {
     lua_pushinteger(L, exit_code);
 #if _WIN32
     return 1;
@@ -309,142 +306,128 @@ static int f_terminal_exited(lua_State* L) {
 }
 
 static int f_terminal_cursor(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  lua_pushinteger(L, terminal->views[terminal->current_view].cursor_x);
-  lua_pushinteger(L, terminal->views[terminal->current_view].cursor_y);
-  switch (terminal->views[terminal->current_view].cursor_mode) {
-    case CURSOR_SOLID: lua_pushliteral(L, "solid"); break;
-    case CURSOR_HIDDEN: lua_pushliteral(L, "hidden"); break;
-    case CURSOR_BLINKING: lua_pushliteral(L, "blinking"); break;
+  int column, row, mode;
+  terminal_core_cursor(lua_toterminal(L, 1)->core, &column, &row, &mode);
+  lua_pushinteger(L, column);
+  lua_pushinteger(L, row);
+  switch (mode) {
+    case TERMINAL_CORE_CURSOR_SOLID: lua_pushliteral(L, "solid"); break;
+    case TERMINAL_CORE_CURSOR_HIDDEN: lua_pushliteral(L, "hidden"); break;
+    default: lua_pushliteral(L, "blinking"); break;
   }
   return 3;
 }
 
 static int f_terminal_cursor_keys_mode(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  switch (terminal->views[terminal->current_view].cursor_keys_mode) {
-    case KEYS_MODE_NORMAL: lua_pushliteral(L, "normal"); break;
-    case KEYS_MODE_APPLICATION: lua_pushliteral(L, "application"); break;
-  }
+  int mode;
+  terminal_core_modes(lua_toterminal(L, 1)->core, &mode, NULL, NULL, NULL, NULL, NULL);
+  lua_pushstring(L, mode == TERMINAL_CORE_KEYS_APPLICATION ? "application" : "normal");
   return 1;
 }
 
 static int f_terminal_keypad_keys_mode(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  switch (terminal->views[terminal->current_view].keypad_keys_mode) {
-    case KEYS_MODE_NORMAL: lua_pushliteral(L, "normal"); break;
-    case KEYS_MODE_APPLICATION: lua_pushliteral(L, "application"); break;
-  }
+  int mode;
+  terminal_core_modes(lua_toterminal(L, 1)->core, NULL, &mode, NULL, NULL, NULL, NULL);
+  lua_pushstring(L, mode == TERMINAL_CORE_KEYS_APPLICATION ? "application" : "normal");
   return 1;
 }
 
 static int f_terminal_scrollback(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  if (terminal->current_view == VIEW_NORMAL_BUFFER) {
-    if (lua_gettop(L) >= 2)
-      terminal_scrollback(terminal, luaL_checkinteger(L, 2));
-    lua_pushinteger(L, terminal->scrollback_position);
-    lua_pushinteger(L, terminal->scrollback_total_lines);
-  } else {
-    lua_pushinteger(L, 0);
-    lua_pushinteger(L, 0);
-  }
+  int position = -1;
+  if (lua_gettop(L) >= 2)
+    position = luaL_checkinteger(L, 2);
+  int current, total;
+  terminal_core_scrollback(lua_toterminal(L, 1)->core, position, &current, &total);
+  lua_pushinteger(L, current);
+  lua_pushinteger(L, total);
   return 2;
 }
 
 static int f_terminal_focused(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  if (terminal->reporting_focus)
-    terminal_core_feed(terminal, lua_toboolean(L, 2) ? "\x1B[" : "\x1B[O", 3);
+  terminal_core_focus(lua_toterminal(L, 1)->core, lua_toboolean(L, 2));
   return 0;
 }
 
 static int f_terminal_paste_mode(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  lua_pushstring(L, terminal->paste_mode == PASTE_BRACKETED ? "bracketed" : "normal");
+  int mode;
+  terminal_core_modes(lua_toterminal(L, 1)->core, NULL, NULL, NULL, NULL, &mode, NULL);
+  lua_pushstring(L, mode == TERMINAL_CORE_PASTE_BRACKETED ? "bracketed" : "normal");
   return 1;
 }
 
 static int f_terminal_name(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  if (terminal->name[0])
-    lua_pushstring(L, terminal->name);
+  const char* name = terminal_core_name(lua_toterminal(L, 1)->core);
+  if (name)
+    lua_pushstring(L, name);
   else
     lua_pushnil(L);
   return 1;
 }
 
 static int f_terminal_clear(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  terminal_clear_scrollback_buffer(terminal);
-  view_t* view = &terminal->views[terminal->current_view];
-  memset(view->buffer, 0, sizeof(buffer_char_t) * (terminal->columns * terminal->lines));
-  view->cursor_x = 0;
-  view->cursor_y = 0;
+  terminal_core_clear(lua_toterminal(L, 1)->core);
   return 0;
 }
 
 static int f_terminal_clear_scrollback(lua_State* L) {
-  terminal_core_clear_scrollback(lua_toterminal(L, 1));
+  terminal_core_clear_scrollback(lua_toterminal(L, 1)->core);
   return 0;
 }
 
 static int f_terminal_reset(lua_State* L) {
-  terminal_core_reset(lua_toterminal(L, 1));
+  terminal_core_reset(lua_toterminal(L, 1)->core);
   return 0;
 }
 
 static int f_terminal_mouse_tracking_mode(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  switch (terminal->mouse_tracking_mode) {
-    case MOUSE_TRACKING_NONE: lua_pushnil(L); break;
-    case MOUSE_TRACKING_X10: lua_pushliteral(L, "x10"); break;
-    case MOUSE_TRACKING_NORMAL: lua_pushliteral(L, "normal"); break;
-    case MOUSE_TRACKING_BUTTON: lua_pushliteral(L, "button"); break;
-    case MOUSE_TRACKING_ANY: lua_pushliteral(L, "any"); break;
+  int mode;
+  terminal_core_modes(lua_toterminal(L, 1)->core, NULL, NULL, &mode, NULL, NULL, NULL);
+  switch (mode) {
+    case TERMINAL_CORE_MOUSE_X10: lua_pushliteral(L, "x10"); break;
+    case TERMINAL_CORE_MOUSE_NORMAL: lua_pushliteral(L, "normal"); break;
+    case TERMINAL_CORE_MOUSE_BUTTON: lua_pushliteral(L, "button"); break;
+    case TERMINAL_CORE_MOUSE_ANY: lua_pushliteral(L, "any"); break;
+    default: lua_pushnil(L); break;
   }
   return 1;
 }
 
 static int f_terminal_mouse_encoding(lua_State* L) {
-  terminal_t* terminal = lua_toterminal(L, 1);
-  switch (terminal->mouse_encoding) {
-    case MOUSE_ENCODING_DEFAULT: lua_pushliteral(L, "default"); break;
-    case MOUSE_ENCODING_SGR: lua_pushliteral(L, "sgr"); break;
-  }
+  int encoding;
+  terminal_core_modes(lua_toterminal(L, 1)->core, NULL, NULL, NULL, &encoding, NULL, NULL);
+  lua_pushstring(L, encoding == TERMINAL_CORE_MOUSE_ENCODING_SGR ? "sgr" : "default");
   return 1;
 }
 
 static const luaL_Reg terminal_api[] = {
-  { "__gc",                f_terminal_gc                     },
-  { "new",                 f_terminal_new                    },
-  { "close",               f_terminal_close                  },
-  { "input",               f_terminal_input                  },
-  { "clear",               f_terminal_clear                  },
-  { "clear_scrollback",    f_terminal_clear_scrollback       },
-  { "reset",               f_terminal_reset                  },
-  { "lines",               f_terminal_lines                  },
-  { "size",                f_terminal_size                   },
-  { "update",              f_terminal_update                 },
-  { "exited",              f_terminal_exited                 },
-  #if _WIN32
-  { "getenv",              f_terminal_getenv                 },
-  #endif
-  { "cursor",              f_terminal_cursor                 },
-  { "focused",             f_terminal_focused                },
-  { "mouse_tracking_mode", f_terminal_mouse_tracking_mode    },
-  { "mouse_encoding",      f_terminal_mouse_encoding         },
-  { "cursor_keys_mode",    f_terminal_cursor_keys_mode       },
-  { "keypad_keys_mode",    f_terminal_keypad_keys_mode       },
+  { "__gc",                f_terminal_gc                  },
+  { "new",                 f_terminal_new                 },
+  { "close",               f_terminal_close               },
+  { "input",               f_terminal_input                },
+  { "clear",               f_terminal_clear                },
+  { "clear_scrollback",    f_terminal_clear_scrollback     },
+  { "reset",               f_terminal_reset                },
+  { "lines",               f_terminal_lines                },
+  { "size",                f_terminal_size                 },
+  { "update",              f_terminal_update               },
+  { "exited",              f_terminal_exited               },
+#if _WIN32
+  { "getenv",              f_terminal_getenv                },
+#endif
+  { "cursor",              f_terminal_cursor                },
+  { "focused",             f_terminal_focused               },
+  { "mouse_tracking_mode", f_terminal_mouse_tracking_mode   },
+  { "mouse_encoding",      f_terminal_mouse_encoding        },
+  { "cursor_keys_mode",    f_terminal_cursor_keys_mode      },
+  { "keypad_keys_mode",    f_terminal_keypad_keys_mode      },
   { "paste_mode",          f_terminal_paste_mode             },
   { "scrollback",          f_terminal_scrollback             },
   { "name",                f_terminal_name                   },
-  { NULL,                  NULL                              }
+  { NULL,                   NULL                              }
 };
 
-
 #ifndef LIBTERMINAL_VERSION
-  #define LIBTERMINAL_VERSION "unknown"
+#define LIBTERMINAL_VERSION "unknown"
 #endif
 
 #ifndef LIBTERMINAL_STANDALONE

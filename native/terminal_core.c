@@ -1404,14 +1404,33 @@ terminal_t* terminal_core_new(int columns, int lines, int scrollback_limit,
 }
 
 void terminal_core_free(terminal_t* terminal) { terminal_free(terminal); }
+const char* terminal_core_last_error(void) { return terminal_get_last_error(); }
 int terminal_core_close(terminal_t* terminal) { return terminal_close(terminal); }
+void terminal_core_set_debug(terminal_t* terminal, int enabled) {
+  if (terminal)
+    terminal->debug = enabled;
+}
 int terminal_core_feed(terminal_t* terminal, const char* data, int length) {
   return terminal_input(terminal, data, length);
 }
 void terminal_core_clear_scrollback(terminal_t* terminal) {
   terminal_clear_scrollback_buffer(terminal);
 }
+void terminal_core_clear(terminal_t* terminal) {
+  if (!terminal || terminal->closed)
+    return;
+  terminal_clear_scrollback_buffer(terminal);
+  view_t* view = &terminal->views[terminal->current_view];
+  if (view->buffer)
+    memset(view->buffer, 0, sizeof(buffer_char_t) * terminal->columns * terminal->lines);
+  if (view->overflows)
+    memset(view->overflows, 0, sizeof(int) * terminal->lines);
+  view->cursor_x = 0;
+  view->cursor_y = 0;
+}
 void terminal_core_reset(terminal_t* terminal) {
+  if (!terminal)
+    return;
   if (terminal->closed)
     return;
   terminal_clear_scrollback_buffer(terminal);
@@ -1459,17 +1478,45 @@ void terminal_core_resize(terminal_t* terminal, int columns, int lines) {
 }
 int terminal_core_is_closed(terminal_t* terminal) { return terminal->closed; }
 void terminal_core_dimensions(terminal_t* terminal, int* columns, int* lines) {
+  if (!terminal)
+    return;
   if (columns) *columns = terminal->columns;
   if (lines) *lines = terminal->lines;
 }
 void terminal_core_cursor(terminal_t* terminal, int* column, int* row, int* mode) {
+  if (!terminal)
+    return;
   view_t* view = &terminal->views[terminal->current_view];
   if (column) *column = view->cursor_x;
   if (row) *row = view->cursor_y;
   if (mode) *mode = view->cursor_mode;
 }
+void terminal_core_modes(terminal_t* terminal, int* cursor_keys_mode,
+    int* keypad_keys_mode, int* mouse_tracking_mode, int* mouse_encoding,
+    int* paste_mode, int* reporting_focus) {
+  if (!terminal)
+    return;
+  view_t* view = &terminal->views[terminal->current_view];
+  if (cursor_keys_mode) *cursor_keys_mode = view->cursor_keys_mode;
+  if (keypad_keys_mode) *keypad_keys_mode = view->keypad_keys_mode;
+  if (mouse_tracking_mode) *mouse_tracking_mode = terminal->mouse_tracking_mode;
+  if (mouse_encoding) *mouse_encoding = terminal->mouse_encoding;
+  if (paste_mode) *paste_mode = terminal->paste_mode;
+  if (reporting_focus) *reporting_focus = terminal->reporting_focus;
+}
+const char* terminal_core_name(terminal_t* terminal) {
+  if (!terminal || !terminal->name[0])
+    return NULL;
+  return terminal->name;
+}
+void terminal_core_focus(terminal_t* terminal, int focused) {
+  if (terminal && terminal->reporting_focus)
+    terminal_input(terminal, focused ? "\x1B[" : "\x1B[O", 3);
+}
 void terminal_core_scrollback(terminal_t* terminal, int position,
     int* current, int* total) {
+  if (!terminal)
+    return;
   if (terminal->current_view == VIEW_NORMAL_BUFFER && position >= 0)
     terminal_scrollback(terminal, position);
   if (current) *current = terminal->current_view == VIEW_NORMAL_BUFFER
@@ -1477,34 +1524,66 @@ void terminal_core_scrollback(terminal_t* terminal, int position,
   if (total) *total = terminal->current_view == VIEW_NORMAL_BUFFER
     ? terminal->scrollback_total_lines : 0;
 }
-int terminal_core_for_each_line(terminal_t* terminal, int first_row,
-    int last_row, terminal_core_line_callback callback, void* user_data) {
-  if (!terminal || terminal->closed || !callback)
+static int terminal_core_emit_line(terminal_core_line_callback callback,
+    void* user_data, int row, const buffer_char_t* line, int columns,
+    int overflow) {
+  if (!callback || !line || columns <= 0)
     return 0;
-  view_t* view = &terminal->views[terminal->current_view];
-  first_row = max(first_row, 0);
-  last_row = min(last_row, terminal->lines - 1);
-  if (first_row > last_row)
-    return 0;
-  char* text = malloc((size_t)terminal->columns * 4 + 1);
+  char* text = malloc((size_t)columns * 4 + 1);
   if (!text)
     return 0;
-  for (int row = first_row; row <= last_row; ++row) {
-    int column = 0;
-    while (column < terminal->columns) {
-      uint64_t style = view->buffer[row * terminal->columns + column].styling.value;
-      int length = 0;
-      while (column < terminal->columns
-          && view->buffer[row * terminal->columns + column].styling.value == style) {
-        unsigned int codepoint = view->buffer[row * terminal->columns + column].codepoint;
-        length += codepoint_to_utf8(codepoint ? codepoint : ' ', &text[length]);
-        ++column;
-      }
-      callback(row, style, text, length, view->overflows[row], user_data);
+  int column = 0;
+  while (column < columns) {
+    uint64_t style = line[column].styling.value;
+    int length = 0;
+    while (column < columns && line[column].styling.value == style) {
+      unsigned int codepoint = line[column].codepoint;
+      length += codepoint_to_utf8(codepoint ? codepoint : ' ', &text[length]);
+      ++column;
     }
+    callback(row, style, text, length, overflow, user_data);
   }
   free(text);
-  return last_row - first_row + 1;
+  return 1;
+}
+
+int terminal_core_for_each_line(terminal_t* terminal, int first_row,
+    int last_row, terminal_core_line_callback callback, void* user_data) {
+  if (!terminal || terminal->closed || !callback || first_row > last_row)
+    return 0;
+
+  view_t* view = &terminal->views[terminal->current_view];
+  int requested = last_row - first_row + 1;
+  int emitted = 0;
+
+  if (terminal->current_view == VIEW_NORMAL_BUFFER && first_row < 0) {
+    int offset = -first_row;
+    int top_offset = terminal->scrollback_target_top_offset;
+    backbuffer_page_t* page = terminal_find_scrollback_page(
+      terminal, terminal->scrollback_target, &offset, &top_offset);
+    int lines_into_page = top_offset - offset;
+    while (page && emitted < requested) {
+      int* overflows = (int*)&page->buffer[
+        LIBTERMINAL_BACKBUFFER_PAGE_LINES * page->columns];
+      for (int row = lines_into_page; row < page->line && emitted < requested; ++row) {
+        terminal_core_emit_line(callback, user_data, first_row + emitted,
+          &page->buffer[row * page->columns], page->columns, overflows[row]);
+        ++emitted;
+      }
+      page = page->next;
+      lines_into_page = 0;
+    }
+  }
+
+  int active_row = max(first_row, 0);
+  while (active_row < terminal->lines && emitted < requested) {
+    terminal_core_emit_line(callback, user_data, first_row + emitted,
+      &view->buffer[active_row * terminal->columns], terminal->columns,
+      view->overflows[active_row]);
+    ++active_row;
+    ++emitted;
+  }
+  return emitted;
 }
 int terminal_core_exited(terminal_t* terminal, int* exit_code, int* signal) {
   if (terminal->closed || terminal->mode != MODE_PTY) return 0;

@@ -86,8 +86,10 @@ libraries:
 * `native/terminal_core.h` is the shared low-level bridge used by both.
 
 These libraries contain no Lua, Pragtical View, Workbench, IPC, or persistence
-dependencies. The Lua module uses the same native core, so local sessions and
-native consumers share parser, resize, and close semantics.
+dependencies. The Lua binding links against the native core library through
+`native/terminal_core.h`; it does not include native implementation files, so
+local sessions and native consumers share parser, resize, and close semantics
+through an opaque C boundary.
 
 ### Supported Shells
 

@@ -11,6 +11,7 @@
 static char output[256];
 static size_t output_length;
 static int saw_hello;
+static int saw_scrollback;
 
 static void collect_output(char* data, int length, void* user_data) {
   (void)user_data;
@@ -35,6 +36,17 @@ static void inspect_line(int row, uint64_t style, const char* text,
   }
 }
 
+static void inspect_scrollback(int row, uint64_t style, const char* text,
+    int length, int overflow, void* user_data) {
+  (void)style;
+  (void)text;
+  (void)length;
+  (void)overflow;
+  (void)user_data;
+  if (row < 0)
+    saw_scrollback = 1;
+}
+
 int main(void) {
   terminal_emulator_t* emulator = terminal_emulator_new(20, 4, 8, "xterm-256color");
   if (!emulator)
@@ -53,9 +65,18 @@ int main(void) {
   }
   terminal_emulator_reset(emulator);
   terminal_emulator_cursor(emulator, &column, &row, &mode);
-  terminal_emulator_free(emulator);
   if (column != 0 || row != 0)
     return 4;
+
+  const char* lines = "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n";
+  terminal_emulator_feed(emulator, lines, strlen(lines));
+  int scrollback_position, scrollback_total;
+  terminal_emulator_scrollback(emulator, 1, &scrollback_position, &scrollback_total);
+  terminal_emulator_for_each_line(emulator, -1, 2, inspect_scrollback, NULL);
+  if (scrollback_position != 1 || scrollback_total < 1 || !saw_scrollback)
+    return 5;
+
+  terminal_emulator_free(emulator);
 
 #ifdef _WIN32
   return 0;
@@ -66,7 +87,7 @@ int main(void) {
     80, 24, 100, "xterm-256color", "/bin/sh", arguments, environment, "/tmp"
   );
   if (!runtime)
-    return 5;
+    return 6;
 
   int exited = 0;
   for (int i = 0; i < 200 && !strstr(output, "native-runtime-output"); ++i) {
@@ -80,6 +101,6 @@ int main(void) {
   }
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
-  return strstr(output, "native-runtime-output") ? 0 : 6;
+  return strstr(output, "native-runtime-output") ? 0 : 7;
 #endif
 }

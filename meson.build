@@ -88,7 +88,7 @@ pragtical_native_plugin_root = meson.current_source_dir()
 pragtical_native_plugin_target = shared_module(
   'terminal',
   'src/libterminal.c',
-  dependencies: terminal_dependencies,
+  dependencies: terminal_dependencies + [terminal_core_dep],
   name_prefix: 'lib',
   install: true,
   install_dir: get_option('data_dir') / 'plugins' / 'terminal'
