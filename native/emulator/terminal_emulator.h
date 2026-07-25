@@ -9,6 +9,11 @@ extern "C" {
 #endif
 
 typedef struct terminal_emulator terminal_emulator_t;
+typedef void (*terminal_emulator_input_callback)(
+  const char* data,
+  int length,
+  void* user_data
+);
 typedef void (*terminal_emulator_line_callback)(
   int row,
   uint64_t style,
@@ -25,29 +30,53 @@ terminal_emulator_t* terminal_emulator_new(
   const char* term
 );
 void terminal_emulator_free(terminal_emulator_t* emulator);
-int terminal_emulator_feed(terminal_emulator_t* emulator, const char* data, size_t length);
+void terminal_emulator_set_debug(terminal_emulator_t* emulator, int enabled);
+void terminal_emulator_set_input_callback(
+  terminal_emulator_t* emulator,
+  terminal_emulator_input_callback callback,
+  void* user_data
+);
+int terminal_emulator_feed(
+  terminal_emulator_t* emulator,
+  const char* data,
+  size_t length
+);
 void terminal_emulator_resize(terminal_emulator_t* emulator, int columns, int rows);
+int terminal_emulator_close(terminal_emulator_t* emulator);
+int terminal_emulator_is_closed(terminal_emulator_t* emulator);
+void terminal_emulator_clear(terminal_emulator_t* emulator);
 void terminal_emulator_clear_scrollback(terminal_emulator_t* emulator);
 void terminal_emulator_reset(terminal_emulator_t* emulator);
 void terminal_emulator_dimensions(terminal_emulator_t* emulator, int* columns, int* rows);
-int terminal_emulator_for_each_line(
-  terminal_emulator_t* emulator,
-  int first_row,
-  int last_row,
-  terminal_emulator_line_callback callback,
-  void* user_data
-);
 int terminal_emulator_cursor(
   terminal_emulator_t* emulator,
   int* column,
   int* row,
   int* mode
 );
+void terminal_emulator_modes(
+  terminal_emulator_t* emulator,
+  int* cursor_keys_mode,
+  int* keypad_keys_mode,
+  int* mouse_tracking_mode,
+  int* mouse_encoding,
+  int* paste_mode,
+  int* reporting_focus
+);
+const char* terminal_emulator_name(terminal_emulator_t* emulator);
+void terminal_emulator_focus(terminal_emulator_t* emulator, int focused);
 void terminal_emulator_scrollback(
   terminal_emulator_t* emulator,
   int position,
   int* current,
   int* total
+);
+int terminal_emulator_for_each_line(
+  terminal_emulator_t* emulator,
+  int first_row,
+  int last_row,
+  terminal_emulator_line_callback callback,
+  void* user_data
 );
 
 #ifdef __cplusplus

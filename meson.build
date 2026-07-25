@@ -30,35 +30,46 @@ if host_machine.system() != 'windows'
   terminal_dependencies += cc.find_library('util', required: true)
 endif
 
-terminal_core_dependencies = []
+terminal_native_dependencies = []
 if host_machine.system() != 'windows'
-  terminal_core_dependencies += cc.find_library('util', required: true)
+  terminal_native_dependencies += cc.find_library('util', required: true)
 endif
-
-terminal_core_library = static_library(
-  'pragtical-terminal-core',
-  'native/terminal_core.c',
-  dependencies: terminal_core_dependencies,
-  install: true
-)
-
-terminal_core_dep = declare_dependency(
-  link_with: terminal_core_library,
-  include_directories: include_directories('native')
-)
 
 terminal_emulator_library = static_library(
   'pragtical-terminal-emulator',
   'native/emulator/terminal_emulator.c',
-  dependencies: terminal_core_dep,
+  dependencies: terminal_native_dependencies,
   install: true
+)
+
+terminal_emulator_dep = declare_dependency(
+  link_with: terminal_emulator_library,
+  include_directories: include_directories('native/emulator')
 )
 
 terminal_runtime_library = static_library(
   'pragtical-terminal-runtime',
   'native/runtime/terminal_runtime.c',
-  dependencies: terminal_core_dep,
+  dependencies: terminal_native_dependencies,
   install: true
+)
+
+terminal_runtime_dep = declare_dependency(
+  link_with: terminal_runtime_library,
+  include_directories: include_directories('native/runtime')
+)
+
+terminal_core_library = static_library(
+  'pragtical-terminal-core',
+  'native/terminal_core.c',
+  dependencies: [terminal_emulator_dep, terminal_runtime_dep],
+  install: true
+)
+
+terminal_core_dep = declare_dependency(
+  link_with: terminal_core_library,
+  dependencies: [terminal_emulator_dep, terminal_runtime_dep],
+  include_directories: include_directories('native')
 )
 
 native_components_test = executable(
@@ -66,7 +77,7 @@ native_components_test = executable(
   'tests/native_components.c',
   include_directories: include_directories('native'),
   link_with: [terminal_core_library, terminal_emulator_library, terminal_runtime_library],
-  dependencies: terminal_core_dependencies
+  dependencies: terminal_native_dependencies
 )
 test('terminal-native-components', native_components_test)
 

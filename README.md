@@ -83,13 +83,15 @@ libraries:
   scrollback, reset, and line iteration.
 * `native/runtime/terminal_runtime.h` for PTY/ConPTY launch, input, resize,
   output polling, exit detection, and close.
-* `native/terminal_core.h` is the shared low-level bridge used by both.
+* `native/terminal_core.h` is the compatibility coordinator that composes the
+  emulator and runtime for the existing plugin ABI.
 
 These libraries contain no Lua, Pragtical View, Workbench, IPC, or persistence
-dependencies. The Lua binding links against the native core library through
-`native/terminal_core.h`; it does not include native implementation files, so
-local sessions and native consumers share parser, resize, and close semantics
-through an opaque C boundary.
+dependencies. The emulator and runtime are independent native libraries: the
+emulator owns VT parsing and screen state, while the runtime owns PTY/ConPTY
+processes and raw byte polling. The Lua binding links against the small native
+core coordinator through `native/terminal_core.h`; it does not include native
+implementation files.
 
 ### Supported Shells
 

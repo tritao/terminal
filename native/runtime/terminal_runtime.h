@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct terminal_runtime terminal_runtime_t;
 typedef void (*terminal_runtime_output_callback)(char* data, int length, void* user_data);
+const char* terminal_runtime_last_error(void);
 
 terminal_runtime_t* terminal_runtime_new(
   int columns,
