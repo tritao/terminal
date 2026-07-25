@@ -95,7 +95,9 @@ test.describe("terminal session boundary", function()
       end
     }
 
-    local view = terminal.open_session(session, { activate = false })
+    local view = terminal.open_session(session, {
+      activate = false, node = core.root_view:get_primary_node()
+    })
     view:shift_selection_update()
     view:shift_selection_update()
     test.equal(attached, 1)
@@ -165,7 +167,9 @@ test.describe("terminal session boundary", function()
       detach = function() detached = true end,
       poll_events = function() return {} end
     }
-    local view = terminal.open_session(session, { activate = false })
+    local view = terminal.open_session(session, {
+      activate = false, node = core.root_view:get_primary_node()
+    })
     test.ok(view:extends(terminal.class))
     test.equal(view.session, session)
     test.not_nil(core.root_view.root_node:get_node_for_view(view))

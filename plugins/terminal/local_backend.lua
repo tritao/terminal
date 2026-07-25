@@ -71,7 +71,7 @@ function LocalSession.new(options)
       return close_runtime(terminate_options)
     end,
     detach = function()
-      if self.terminate_on_detach and self.status_name == "running" then
+      if self.terminate_on_detach and self.status_name ~= "closed" then
         self.session:set_status("closed")
         return close_runtime()
       end

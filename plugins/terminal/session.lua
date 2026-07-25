@@ -46,6 +46,7 @@ function Session.new(options)
   self._offset = offset
   self._replay_pending = nil
   self._attached = false
+  self._detached = false
   self.duplicate_events = 0
   self.gap_events = 0
   self._closed = false
@@ -65,6 +66,7 @@ function Session:attach()
     if result == false then return result, message end
   end
   self._attached = true
+  self._detached = false
   if self.capabilities.replay and self._request_replay and not self._replay_pending then
     local result, message = self:request_replay(self._offset)
     if result == false then
@@ -149,10 +151,12 @@ function Session:apply_checkpoint(event, emulator)
 end
 
 function Session:detach()
+  if self._closed or self._detached then return true end
   local result, message = true
   if self._detach then result, message = self._detach(self) end
   if result ~= false then
     self._attached = false
+    self._detached = true
     self._replay_pending = nil
   end
   return result, message
