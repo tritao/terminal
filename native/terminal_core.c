@@ -84,6 +84,23 @@ int terminal_core_feed(terminal_core_t* terminal, const char* data, int length) 
   return terminal_emulator_feed(terminal->emulator, data, (size_t)length);
 }
 
+size_t terminal_core_checkpoint_size(terminal_core_t* terminal) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_checkpoint_size(terminal->emulator) : 0;
+}
+
+int terminal_core_checkpoint(terminal_core_t* terminal, void* data,
+    size_t size, size_t* written) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_checkpoint(terminal->emulator, data, size, written) : 0;
+}
+
+int terminal_core_restore_checkpoint(terminal_core_t* terminal,
+    const void* data, size_t size) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_restore_checkpoint(terminal->emulator, data, size) : 0;
+}
+
 void terminal_core_clear_scrollback(terminal_core_t* terminal) {
   if (terminal)
     terminal_emulator_clear_scrollback(terminal->emulator);

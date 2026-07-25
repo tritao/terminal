@@ -45,6 +45,11 @@ function Emulator:feed(data)
   if type(data) ~= "string" then error("terminal emulator data must be a string") end
   return self.native:input(data) or 0
 end
+function Emulator:checkpoint() return self.native:checkpoint() end
+function Emulator:restore_checkpoint(data)
+  if type(data) ~= "string" then error("terminal checkpoint data must be a string") end
+  return self.native:restore_checkpoint(data)
+end
 function Emulator:resize(columns, rows) return self.native:size(columns, rows) end
 function Emulator:update(callback)
   local shifts, data = self.native:update()

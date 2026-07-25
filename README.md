@@ -71,8 +71,9 @@ requesting replay when it detects a gap:
 ```
 
 A checkpoint can provide a restored emulator or a `restore_checkpoint` handler
-when constructing the session. Checkpoint storage and replay policy remain
-provider responsibilities.
+when constructing the session. The bundled emulator accepts the native
+checkpoint bytes directly. Checkpoint storage and replay policy remain provider
+responsibilities.
 
 Launch profiles are terminal-owned and may be registered by plugins:
 
@@ -89,13 +90,15 @@ terminal output:
 ```lua
 local emulator = terminal.new_emulator { columns = 100, rows = 30 }
 emulator:feed(bytes)
+local checkpoint = emulator:checkpoint()
+emulator:restore_checkpoint(checkpoint)
 ```
 
 The native implementation is also exposed through editor-independent C
 libraries:
 
 * `native/emulator/terminal_emulator.h` for parsing, screen state, cursor,
-  scrollback, reset, and line iteration.
+  scrollback, reset, checkpoint serialization/restoration, and line iteration.
 * `native/runtime/terminal_runtime.h` for PTY/ConPTY launch, input, resize,
   output polling, exit detection, and close.
 * `native/terminal_core.h` is the compatibility coordinator that composes the

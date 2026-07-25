@@ -279,6 +279,37 @@ static int f_terminal_input(lua_State* L) {
   return 1;
 }
 
+static int f_terminal_checkpoint(lua_State* L) {
+  terminal_core_t* core = lua_toterminal(L, 1)->core;
+  size_t size = terminal_core_checkpoint_size(core);
+  if (!size)
+    return luaL_error(L, "failed to size terminal checkpoint");
+  char* data = malloc(size);
+  if (!data)
+    return luaL_error(L, "failed to allocate terminal checkpoint");
+  size_t written = 0;
+  if (!terminal_core_checkpoint(core, data, size, &written)) {
+    free(data);
+    return luaL_error(L, "failed to serialize terminal checkpoint");
+  }
+  lua_pushlstring(L, data, written);
+  free(data);
+  return 1;
+}
+
+static int f_terminal_restore_checkpoint(lua_State* L) {
+  size_t length;
+  const char* data = luaL_checklstring(L, 2, &length);
+  if (!terminal_core_restore_checkpoint(lua_toterminal(L, 1)->core,
+      data, length)) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "invalid terminal checkpoint");
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
 static int f_terminal_size(lua_State* L) {
   terminal_core_t* terminal = lua_toterminal(L, 1)->core;
   if (lua_gettop(L) > 1)
@@ -407,6 +438,8 @@ static const luaL_Reg terminal_api[] = {
   { "clear",               f_terminal_clear                },
   { "clear_scrollback",    f_terminal_clear_scrollback     },
   { "reset",               f_terminal_reset                },
+  { "checkpoint",           f_terminal_checkpoint           },
+  { "restore_checkpoint",   f_terminal_restore_checkpoint   },
   { "lines",               f_terminal_lines                },
   { "size",                f_terminal_size                 },
   { "update",              f_terminal_update               },

@@ -1,6 +1,7 @@
 #ifndef PRAGTICAL_TERMINAL_CORE_H
 #define PRAGTICAL_TERMINAL_CORE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -63,6 +64,18 @@ const char* terminal_core_last_error(void);
 int terminal_core_close(terminal_core_t* terminal);
 void terminal_core_set_debug(terminal_core_t* terminal, int enabled);
 int terminal_core_feed(terminal_core_t* terminal, const char* data, int length);
+size_t terminal_core_checkpoint_size(terminal_core_t* terminal);
+int terminal_core_checkpoint(
+  terminal_core_t* terminal,
+  void* data,
+  size_t size,
+  size_t* written
+);
+int terminal_core_restore_checkpoint(
+  terminal_core_t* terminal,
+  const void* data,
+  size_t size
+);
 void terminal_core_clear_scrollback(terminal_core_t* terminal);
 void terminal_core_clear(terminal_core_t* terminal);
 void terminal_core_reset(terminal_core_t* terminal);

@@ -71,26 +71,22 @@ test.describe("terminal session boundary", function()
     test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
     local attached, detached = 0, 0
     local replay_offsets = {}
-    local checkpoint = terminal.new_emulator { columns = 20, rows = 4 }
-    checkpoint:feed("checkpoint\r\n")
+    local source = terminal.new_emulator { columns = 20, rows = 4 }
+    source:feed("checkpoint\r\n")
+    local checkpoint_data = source:checkpoint()
+    local emulator = terminal.new_emulator { columns = 5, rows = 2 }
     local pending = {
       { type = "checkpoint", runtime_id = "remote-session", offset = 0,
-        data = "opaque-checkpoint" },
+        data = checkpoint_data },
       { type = "output", runtime_id = "remote-session", offset = 0, data = "live" }
     }
     local session = terminal.Session {
       id = "remote-session",
-      emulator = checkpoint,
+      emulator = emulator,
       capabilities = { replay = true, events_applied = false },
       attach = function() attached = attached + 1 end,
       write = function() end,
       resize = function() end,
-      restore_checkpoint = function(_, event, emulator)
-        test.equal(event.data, "opaque-checkpoint")
-        emulator:reset()
-        emulator:feed("checkpoint\r\n")
-        return emulator
-      end,
       request_replay = function(_, offset) replay_offsets[#replay_offsets + 1] = offset end,
       detach = function() detached = detached + 1 end,
       poll_events = function()
@@ -105,7 +101,7 @@ test.describe("terminal session boundary", function()
     test.equal(attached, 1)
     test.equal(session:offset(), 4)
     test.same(replay_offsets, { 0 })
-    test.ok(view.terminal == checkpoint)
+    test.ok(view.terminal == emulator)
 
     local found_live = false
     for _, line in ipairs(view.terminal:lines()) do
@@ -116,7 +112,8 @@ test.describe("terminal session boundary", function()
     test.ok(found_live, "checkpoint emulator did not receive live output")
     view:close()
     test.equal(detached, 1)
-    checkpoint:close()
+    source:close()
+    emulator:close()
   end)
 
   test.test("normalizes local launch specifications and reports capabilities", function()

@@ -41,6 +41,19 @@ int terminal_emulator_feed(
   const char* data,
   size_t length
 );
+/* Checkpoints are versioned, little-endian emulator state snapshots. */
+size_t terminal_emulator_checkpoint_size(terminal_emulator_t* emulator);
+int terminal_emulator_checkpoint(
+  terminal_emulator_t* emulator,
+  void* data,
+  size_t size,
+  size_t* written
+);
+int terminal_emulator_restore_checkpoint(
+  terminal_emulator_t* emulator,
+  const void* data,
+  size_t size
+);
 void terminal_emulator_resize(terminal_emulator_t* emulator, int columns, int rows);
 int terminal_emulator_close(terminal_emulator_t* emulator);
 int terminal_emulator_is_closed(terminal_emulator_t* emulator);

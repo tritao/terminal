@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include <inttypes.h>
+#include <limits.h>
 #include "terminal_emulator.h"
 
 #ifndef min
@@ -170,6 +171,504 @@ typedef struct terminal_emulator {
   terminal_input_callback_t input_callback;
   void* input_callback_data;
 } terminal_t;
+
+static void terminal_clear_scrollback_buffer(terminal_t* terminal);
+
+#define TERMINAL_CHECKPOINT_VERSION 1u
+#define TERMINAL_CHECKPOINT_HEADER_SIZE 60u
+#define TERMINAL_CHECKPOINT_MAX_CELLS (16u * 1024u * 1024u)
+#define TERMINAL_CHECKPOINT_MAX_PAGES 100000u
+
+static const uint8_t terminal_checkpoint_magic[8] = {
+  'P', 'T', 'E', 'R', 'M', 'C', 'P', 0
+};
+
+static terminal_t* terminal_new(int columns, int lines, int scrollback_limit);
+static void terminal_free(terminal_t* terminal);
+static int terminal_scrollback(terminal_t* terminal, int target);
+
+typedef struct terminal_checkpoint_writer {
+  uint8_t* data;
+  size_t size;
+  size_t offset;
+  int failed;
+} terminal_checkpoint_writer_t;
+
+typedef struct terminal_checkpoint_reader {
+  const uint8_t* data;
+  size_t size;
+  size_t offset;
+  int failed;
+} terminal_checkpoint_reader_t;
+
+static int checkpoint_add_size(size_t* size, size_t amount) {
+  if (amount > SIZE_MAX - *size)
+    return 0;
+  *size += amount;
+  return 1;
+}
+
+static int checkpoint_multiply_size(size_t* result, size_t left, size_t right) {
+  if (left && right > SIZE_MAX / left)
+    return 0;
+  *result = left * right;
+  return 1;
+}
+
+static size_t terminal_bounded_string_length(const char* string, size_t limit) {
+  size_t length = 0;
+  while (length < limit && string[length])
+    ++length;
+  return length;
+}
+
+static void checkpoint_write_bytes(terminal_checkpoint_writer_t* writer,
+    const void* data, size_t length) {
+  if (writer->failed || length > writer->size - writer->offset) {
+    writer->failed = 1;
+    return;
+  }
+  memcpy(&writer->data[writer->offset], data, length);
+  writer->offset += length;
+}
+
+static void checkpoint_write_u32(terminal_checkpoint_writer_t* writer,
+    uint32_t value) {
+  uint8_t bytes[4] = {
+    (uint8_t)(value >> 0), (uint8_t)(value >> 8),
+    (uint8_t)(value >> 16), (uint8_t)(value >> 24)
+  };
+  checkpoint_write_bytes(writer, bytes, sizeof(bytes));
+}
+
+static void checkpoint_write_u64(terminal_checkpoint_writer_t* writer,
+    uint64_t value) {
+  uint8_t bytes[8] = {
+    (uint8_t)(value >> 0), (uint8_t)(value >> 8),
+    (uint8_t)(value >> 16), (uint8_t)(value >> 24),
+    (uint8_t)(value >> 32), (uint8_t)(value >> 40),
+    (uint8_t)(value >> 48), (uint8_t)(value >> 56)
+  };
+  checkpoint_write_bytes(writer, bytes, sizeof(bytes));
+}
+
+static void checkpoint_write_i32(terminal_checkpoint_writer_t* writer, int value) {
+  checkpoint_write_u32(writer, (uint32_t)(int32_t)value);
+}
+
+static uint32_t checkpoint_read_u32(terminal_checkpoint_reader_t* reader) {
+  if (reader->failed || sizeof(uint32_t) > reader->size - reader->offset) {
+    reader->failed = 1;
+    return 0;
+  }
+  const uint8_t* bytes = &reader->data[reader->offset];
+  reader->offset += sizeof(uint32_t);
+  return ((uint32_t)bytes[0] << 0)
+    | ((uint32_t)bytes[1] << 8)
+    | ((uint32_t)bytes[2] << 16)
+    | ((uint32_t)bytes[3] << 24);
+}
+
+static uint64_t checkpoint_read_u64(terminal_checkpoint_reader_t* reader) {
+  if (reader->failed || sizeof(uint64_t) > reader->size - reader->offset) {
+    reader->failed = 1;
+    return 0;
+  }
+  const uint8_t* bytes = &reader->data[reader->offset];
+  reader->offset += sizeof(uint64_t);
+  return ((uint64_t)bytes[0] << 0)
+    | ((uint64_t)bytes[1] << 8)
+    | ((uint64_t)bytes[2] << 16)
+    | ((uint64_t)bytes[3] << 24)
+    | ((uint64_t)bytes[4] << 32)
+    | ((uint64_t)bytes[5] << 40)
+    | ((uint64_t)bytes[6] << 48)
+    | ((uint64_t)bytes[7] << 56);
+}
+
+static int checkpoint_read_i32(terminal_checkpoint_reader_t* reader) {
+  return (int)(int32_t)checkpoint_read_u32(reader);
+}
+
+static const uint8_t* checkpoint_read_bytes(terminal_checkpoint_reader_t* reader,
+    size_t length) {
+  if (reader->failed || length > reader->size - reader->offset) {
+    reader->failed = 1;
+    return NULL;
+  }
+  const uint8_t* data = &reader->data[reader->offset];
+  reader->offset += length;
+  return data;
+}
+
+static size_t terminal_checkpoint_page_count(const terminal_t* terminal) {
+  size_t count = 0;
+  for (backbuffer_page_t* page = terminal->scrollback_buffer_end;
+      page; page = page->next)
+    ++count;
+  return count;
+}
+
+static int terminal_checkpoint_view_size(const terminal_t* terminal,
+    size_t* size) {
+  for (int view_index = 0; view_index < VIEW_MAX; ++view_index) {
+    if (!checkpoint_add_size(size, 15 * sizeof(uint32_t) + 2 * sizeof(uint64_t)))
+      return 0;
+    if (!checkpoint_add_size(size, 256 * sizeof(uint32_t)))
+      return 0;
+    size_t cells;
+    if (!checkpoint_multiply_size(&cells, (size_t)terminal->columns,
+        (size_t)terminal->lines))
+      return 0;
+    size_t overflow_size;
+    size_t cell_size;
+    if (!checkpoint_multiply_size(&overflow_size, (size_t)terminal->lines,
+        sizeof(uint32_t))
+        || !checkpoint_multiply_size(&cell_size, cells,
+          sizeof(uint64_t) + sizeof(uint32_t)))
+      return 0;
+    if (!checkpoint_add_size(size, overflow_size))
+      return 0;
+    if (!checkpoint_add_size(size, cell_size))
+      return 0;
+  }
+  return 1;
+}
+
+static int terminal_checkpoint_size_for(const terminal_t* terminal,
+    size_t* size) {
+  if (!terminal || terminal->closed || terminal->columns <= 0 || terminal->lines <= 0)
+    return 0;
+  if (terminal->scrollback_limit < 0)
+    return 0;
+  size_t cells;
+  if (!checkpoint_multiply_size(&cells, (size_t)terminal->columns,
+      (size_t)terminal->lines)
+      || cells > TERMINAL_CHECKPOINT_MAX_CELLS)
+    return 0;
+  size_t page_count = terminal_checkpoint_page_count(terminal);
+  if (page_count > UINT32_MAX || page_count > TERMINAL_CHECKPOINT_MAX_PAGES)
+    return 0;
+  if (!checkpoint_add_size(size, TERMINAL_CHECKPOINT_HEADER_SIZE))
+    return 0;
+  size_t name_length = terminal_bounded_string_length(terminal->name,
+    sizeof(terminal->name));
+  size_t buffered_length = terminal_bounded_string_length(
+    terminal->buffered_sequence,
+    sizeof(terminal->buffered_sequence));
+  if (name_length >= sizeof(terminal->name)
+      || buffered_length >= sizeof(terminal->buffered_sequence))
+    return 0;
+  if (!checkpoint_add_size(size, name_length)
+      || !checkpoint_add_size(size, buffered_length)
+      || !terminal_checkpoint_view_size(terminal, size))
+    return 0;
+  for (backbuffer_page_t* page = terminal->scrollback_buffer_end;
+      page; page = page->next) {
+    if (page->columns <= 0 || page->lines <= 0 || page->line < 0
+        || page->line > page->lines)
+      return 0;
+    size_t page_cells;
+    if (!checkpoint_multiply_size(&page_cells, (size_t)page->columns,
+        (size_t)page->line)
+        || page_cells > TERMINAL_CHECKPOINT_MAX_CELLS)
+      return 0;
+    size_t overflow_size;
+    size_t cell_size;
+    if (!checkpoint_multiply_size(&overflow_size, (size_t)page->line,
+        sizeof(uint32_t))
+        || !checkpoint_multiply_size(&cell_size, page_cells,
+          sizeof(uint64_t) + sizeof(uint32_t)))
+      return 0;
+    if (!checkpoint_add_size(size, 3 * sizeof(uint32_t))
+        || !checkpoint_add_size(size, overflow_size)
+        || !checkpoint_add_size(size, cell_size))
+      return 0;
+  }
+  return 1;
+}
+
+static void terminal_checkpoint_write_view(
+    terminal_checkpoint_writer_t* writer, const terminal_t* terminal,
+    const view_t* view) {
+  checkpoint_write_i32(writer, view->cursor_x);
+  checkpoint_write_i32(writer, view->cursor_y);
+  checkpoint_write_i32(writer, view->cursor_styling_inversed);
+  checkpoint_write_u64(writer, view->cursor_styling.value);
+  checkpoint_write_i32(writer, view->saved_cursor_x);
+  checkpoint_write_i32(writer, view->saved_cursor_y);
+  checkpoint_write_i32(writer, view->saved_cursor_styling_inversed);
+  checkpoint_write_u64(writer, view->saved_cursor_styling.value);
+  checkpoint_write_i32(writer, view->saved_charset);
+  checkpoint_write_i32(writer, view->cursor_mode);
+  checkpoint_write_i32(writer, view->cursor_keys_mode);
+  checkpoint_write_i32(writer, view->keypad_keys_mode);
+  checkpoint_write_i32(writer, view->charset);
+  checkpoint_write_i32(writer, view->last_graphical_character);
+  checkpoint_write_i32(writer, view->tab_size);
+  checkpoint_write_i32(writer, view->scrolling_region_start);
+  checkpoint_write_i32(writer, view->scrolling_region_end);
+  for (int i = 0; i < 256; ++i)
+    checkpoint_write_u32(writer, view->palette[i].value);
+  for (int row = 0; row < terminal->lines; ++row)
+    checkpoint_write_i32(writer, view->overflows[row]);
+  for (int row = 0; row < terminal->lines; ++row) {
+    for (int column = 0; column < terminal->columns; ++column) {
+      const buffer_char_t* cell = &view->buffer[row * terminal->columns + column];
+      checkpoint_write_u64(writer, cell->styling.value);
+      checkpoint_write_u32(writer, cell->codepoint);
+    }
+  }
+}
+
+static void terminal_checkpoint_write(
+    terminal_checkpoint_writer_t* writer, const terminal_t* terminal,
+    size_t size) {
+  checkpoint_write_bytes(writer, terminal_checkpoint_magic,
+    sizeof(terminal_checkpoint_magic));
+  checkpoint_write_u32(writer, TERMINAL_CHECKPOINT_VERSION);
+  checkpoint_write_u32(writer, (uint32_t)terminal->columns);
+  checkpoint_write_u32(writer, (uint32_t)terminal->lines);
+  checkpoint_write_u32(writer, (uint32_t)terminal->scrollback_limit);
+  checkpoint_write_u32(writer, (uint32_t)terminal->current_view);
+  checkpoint_write_u32(writer, (uint32_t)terminal->paste_mode);
+  checkpoint_write_u32(writer, (uint32_t)terminal->mouse_tracking_mode);
+  checkpoint_write_u32(writer, (uint32_t)terminal->mouse_encoding);
+  checkpoint_write_u32(writer, (uint32_t)terminal->reporting_focus);
+  checkpoint_write_u32(writer, (uint32_t)terminal->scrollback_position);
+  size_t name_length = terminal_bounded_string_length(terminal->name,
+    sizeof(terminal->name));
+  size_t buffered_length = terminal_bounded_string_length(
+    terminal->buffered_sequence,
+    sizeof(terminal->buffered_sequence));
+  checkpoint_write_u32(writer, (uint32_t)name_length);
+  checkpoint_write_u32(writer, (uint32_t)buffered_length);
+  checkpoint_write_u32(writer, (uint32_t)terminal_checkpoint_page_count(terminal));
+  checkpoint_write_bytes(writer, terminal->name, name_length);
+  checkpoint_write_bytes(writer, terminal->buffered_sequence, buffered_length);
+  for (int i = 0; i < VIEW_MAX; ++i)
+    terminal_checkpoint_write_view(writer, terminal, &terminal->views[i]);
+  for (backbuffer_page_t* page = terminal->scrollback_buffer_end;
+      page; page = page->next) {
+    checkpoint_write_u32(writer, (uint32_t)page->columns);
+    checkpoint_write_u32(writer, (uint32_t)page->lines);
+    checkpoint_write_u32(writer, (uint32_t)page->line);
+    int* overflows = (int*)&page->buffer[
+      LIBTERMINAL_BACKBUFFER_PAGE_LINES * page->columns];
+    for (int row = 0; row < page->line; ++row)
+      checkpoint_write_i32(writer, overflows[row]);
+    for (int row = 0; row < page->line; ++row) {
+      for (int column = 0; column < page->columns; ++column) {
+        const buffer_char_t* cell = &page->buffer[row * page->columns + column];
+        checkpoint_write_u64(writer, cell->styling.value);
+        checkpoint_write_u32(writer, cell->codepoint);
+      }
+    }
+  }
+  if (writer->offset != size)
+    writer->failed = 1;
+}
+
+static int terminal_checkpoint_valid_view(const terminal_t* terminal,
+    const view_t* view) {
+  if (view->cursor_x < 0 || view->cursor_x >= terminal->columns
+      || view->cursor_y < 0 || view->cursor_y >= terminal->lines
+      || view->saved_cursor_x < 0 || view->saved_cursor_x >= terminal->columns
+      || view->saved_cursor_y < 0 || view->saved_cursor_y >= terminal->lines
+      || view->cursor_mode < CURSOR_SOLID || view->cursor_mode > CURSOR_BLINKING
+      || view->saved_charset < CHARSET_US || view->saved_charset > CHARSET_OTHER
+      || view->cursor_keys_mode < KEYS_MODE_NORMAL
+      || view->cursor_keys_mode > KEYS_MODE_APPLICATION
+      || view->keypad_keys_mode < KEYS_MODE_NORMAL
+      || view->keypad_keys_mode > KEYS_MODE_APPLICATION
+      || view->charset < CHARSET_US || view->charset > CHARSET_OTHER
+      || view->scrolling_region_start < -1
+      || view->scrolling_region_start >= terminal->lines
+      || view->scrolling_region_end < -1
+      || view->scrolling_region_end > terminal->lines
+      || view->tab_size <= 0)
+    return 0;
+  return 1;
+}
+
+static int terminal_checkpoint_read_view(
+    terminal_checkpoint_reader_t* reader, terminal_t* terminal, view_t* view) {
+  view->cursor_x = checkpoint_read_i32(reader);
+  view->cursor_y = checkpoint_read_i32(reader);
+  view->cursor_styling_inversed = checkpoint_read_i32(reader);
+  view->cursor_styling.value = checkpoint_read_u64(reader);
+  view->saved_cursor_x = checkpoint_read_i32(reader);
+  view->saved_cursor_y = checkpoint_read_i32(reader);
+  view->saved_cursor_styling_inversed = checkpoint_read_i32(reader);
+  view->saved_cursor_styling.value = checkpoint_read_u64(reader);
+  view->saved_charset = (charset_e)checkpoint_read_i32(reader);
+  view->cursor_mode = (cursor_mode_e)checkpoint_read_i32(reader);
+  view->cursor_keys_mode = (keys_mode_e)checkpoint_read_i32(reader);
+  view->keypad_keys_mode = (keys_mode_e)checkpoint_read_i32(reader);
+  view->charset = (charset_e)checkpoint_read_i32(reader);
+  view->last_graphical_character = checkpoint_read_i32(reader);
+  view->tab_size = checkpoint_read_i32(reader);
+  view->scrolling_region_start = checkpoint_read_i32(reader);
+  view->scrolling_region_end = checkpoint_read_i32(reader);
+  for (int i = 0; i < 256; ++i)
+    view->palette[i].value = checkpoint_read_u32(reader);
+  for (int row = 0; row < terminal->lines; ++row)
+    view->overflows[row] = checkpoint_read_i32(reader);
+  for (int row = 0; row < terminal->lines; ++row) {
+    for (int column = 0; column < terminal->columns; ++column) {
+      buffer_char_t* cell = &view->buffer[row * terminal->columns + column];
+      cell->styling.value = checkpoint_read_u64(reader);
+      cell->codepoint = checkpoint_read_u32(reader);
+    }
+  }
+  return !reader->failed && terminal_checkpoint_valid_view(terminal, view);
+}
+
+static int terminal_emulator_restore_checkpoint_data(terminal_t* terminal,
+    const void* data, size_t size) {
+  if (!terminal || terminal->closed || !data || size < TERMINAL_CHECKPOINT_HEADER_SIZE)
+    return 0;
+  terminal_checkpoint_reader_t reader = {
+    .data = (const uint8_t*)data, .size = size
+  };
+  const uint8_t* magic = checkpoint_read_bytes(&reader,
+    sizeof(terminal_checkpoint_magic));
+  if (reader.failed || memcmp(magic, terminal_checkpoint_magic,
+      sizeof(terminal_checkpoint_magic)) != 0
+      || checkpoint_read_u32(&reader) != TERMINAL_CHECKPOINT_VERSION)
+    return 0;
+
+  uint32_t columns = checkpoint_read_u32(&reader);
+  uint32_t lines = checkpoint_read_u32(&reader);
+  uint32_t scrollback_limit = checkpoint_read_u32(&reader);
+  uint32_t current_view = checkpoint_read_u32(&reader);
+  uint32_t paste_mode = checkpoint_read_u32(&reader);
+  uint32_t mouse_tracking_mode = checkpoint_read_u32(&reader);
+  uint32_t mouse_encoding = checkpoint_read_u32(&reader);
+  uint32_t reporting_focus = checkpoint_read_u32(&reader);
+  uint32_t scrollback_position = checkpoint_read_u32(&reader);
+  uint32_t name_length = checkpoint_read_u32(&reader);
+  uint32_t buffered_length = checkpoint_read_u32(&reader);
+  uint32_t page_count = checkpoint_read_u32(&reader);
+  if (reader.failed || !columns || !lines
+      || columns > INT_MAX || lines > INT_MAX
+      || scrollback_limit > INT_MAX || current_view >= VIEW_MAX
+      || paste_mode > PASTE_BRACKETED
+      || mouse_tracking_mode > MOUSE_TRACKING_ANY
+      || mouse_encoding > MOUSE_ENCODING_SGR
+      || name_length >= LIBTERMINAL_NAME_MAX
+      || buffered_length >= LIBTERMINAL_CHUNK_SIZE
+      || page_count > TERMINAL_CHECKPOINT_MAX_PAGES)
+    return 0;
+  size_t cells;
+  if (!checkpoint_multiply_size(&cells, columns, lines)
+      || cells > TERMINAL_CHECKPOINT_MAX_CELLS)
+    return 0;
+
+  terminal_t* restored = terminal_new((int)columns, (int)lines,
+    (int)scrollback_limit);
+  if (!restored)
+    return 0;
+  restored->current_view = (view_e)current_view;
+  restored->paste_mode = (paste_mode_e)paste_mode;
+  restored->mouse_tracking_mode = (mouse_tracking_mode_e)mouse_tracking_mode;
+  restored->mouse_encoding = (mouse_encoding_e)mouse_encoding;
+  restored->reporting_focus = (int)reporting_focus;
+  const uint8_t* name = checkpoint_read_bytes(&reader, name_length);
+  const uint8_t* buffered = checkpoint_read_bytes(&reader, buffered_length);
+  if (reader.failed) {
+    terminal_free(restored);
+    return 0;
+  }
+  memcpy(restored->name, name, name_length);
+  restored->name[name_length] = 0;
+  memcpy(restored->buffered_sequence, buffered, buffered_length);
+  restored->buffered_sequence[buffered_length] = 0;
+  for (int i = 0; i < VIEW_MAX; ++i) {
+    if (!terminal_checkpoint_read_view(&reader, restored, &restored->views[i])) {
+      terminal_free(restored);
+      return 0;
+    }
+  }
+
+  backbuffer_page_t* last_page = NULL;
+  for (uint32_t page_index = 0; page_index < page_count; ++page_index) {
+    uint32_t page_columns = checkpoint_read_u32(&reader);
+    uint32_t page_lines = checkpoint_read_u32(&reader);
+    uint32_t page_line = checkpoint_read_u32(&reader);
+    if (reader.failed || !page_columns || !page_lines
+        || page_columns > INT_MAX
+        || page_lines != LIBTERMINAL_BACKBUFFER_PAGE_LINES
+        || page_line > page_lines)
+      goto invalid_checkpoint;
+    size_t page_cells;
+    if (!checkpoint_multiply_size(&page_cells, page_columns, page_line)
+        || page_cells > TERMINAL_CHECKPOINT_MAX_CELLS)
+      goto invalid_checkpoint;
+    size_t allocation = sizeof(backbuffer_page_t);
+    if (!checkpoint_multiply_size(&page_cells, page_columns, page_lines)
+        || page_cells > TERMINAL_CHECKPOINT_MAX_CELLS
+        || !checkpoint_add_size(&allocation, page_cells * sizeof(buffer_char_t))
+        || !checkpoint_add_size(&allocation, page_lines * sizeof(int)))
+      goto invalid_checkpoint;
+    backbuffer_page_t* page = calloc(1, allocation);
+    if (!page)
+      goto invalid_checkpoint;
+    page->columns = (int)page_columns;
+    page->lines = (int)page_lines;
+    page->line = (int)page_line;
+    page->prev = last_page;
+    if (last_page)
+      last_page->next = page;
+    else
+      restored->scrollback_buffer_end = page;
+    last_page = page;
+    restored->scrollback_buffer_start = last_page;
+    int* overflows = (int*)&page->buffer[
+      LIBTERMINAL_BACKBUFFER_PAGE_LINES * page->columns];
+    for (uint32_t row = 0; row < page_line; ++row)
+      overflows[row] = checkpoint_read_i32(&reader);
+    for (uint32_t row = 0; row < page_line; ++row) {
+      for (uint32_t column = 0; column < page_columns; ++column) {
+        buffer_char_t* cell = &page->buffer[row * page->columns + column];
+        cell->styling.value = checkpoint_read_u64(&reader);
+        cell->codepoint = checkpoint_read_u32(&reader);
+      }
+    }
+    if (reader.failed)
+      goto invalid_checkpoint;
+    if (restored->scrollback_total_lines > INT_MAX - (int)page_line)
+      goto invalid_checkpoint;
+    restored->scrollback_total_lines += (int)page_line;
+  }
+  restored->scrollback_buffer_start = last_page;
+  restored->scrollback_position = 0;
+  restored->scrollback_target = NULL;
+  restored->scrollback_target_top_offset = 0;
+  terminal_scrollback(restored, scrollback_position > INT_MAX
+    ? INT_MAX : (int)scrollback_position);
+  if (reader.failed || reader.offset != reader.size)
+    goto invalid_checkpoint;
+
+  terminal_input_callback_t input_callback = terminal->input_callback;
+  void* input_callback_data = terminal->input_callback_data;
+  int debug = terminal->debug;
+  terminal_clear_scrollback_buffer(terminal);
+  for (int i = 0; i < VIEW_MAX; ++i) {
+    free(terminal->views[i].buffer);
+    free(terminal->views[i].overflows);
+  }
+  *terminal = *restored;
+  terminal->input_callback = input_callback;
+  terminal->input_callback_data = input_callback_data;
+  terminal->debug = debug;
+  free(restored);
+  return 1;
+
+invalid_checkpoint:
+  terminal_free(restored);
+  return 0;
+}
 
 
 static int utf8_to_codepoint(const char *p, unsigned *dst) {
@@ -1172,6 +1671,34 @@ int terminal_emulator_feed(terminal_emulator_t* emulator,
     const char* data, size_t length) {
   terminal_t* terminal = (terminal_t*)emulator;
   return terminal ? terminal_output(terminal, data, (int)length) : 0;
+}
+
+size_t terminal_emulator_checkpoint_size(terminal_emulator_t* emulator) {
+  size_t size = 0;
+  return terminal_checkpoint_size_for((terminal_t*)emulator, &size) ? size : 0;
+}
+
+int terminal_emulator_checkpoint(terminal_emulator_t* emulator,
+    void* data, size_t size, size_t* written) {
+  terminal_t* terminal = (terminal_t*)emulator;
+  size_t required = 0;
+  if (!terminal_checkpoint_size_for(terminal, &required))
+    return 0;
+  if (written)
+    *written = required;
+  if (!data || size < required)
+    return 0;
+  terminal_checkpoint_writer_t writer = {
+    .data = (uint8_t*)data, .size = size
+  };
+  terminal_checkpoint_write(&writer, terminal, required);
+  return !writer.failed;
+}
+
+int terminal_emulator_restore_checkpoint(terminal_emulator_t* emulator,
+    const void* data, size_t size) {
+  return terminal_emulator_restore_checkpoint_data((terminal_t*)emulator,
+    data, size);
 }
 
 void terminal_emulator_resize(terminal_emulator_t* emulator,

@@ -2,6 +2,7 @@
 #include "../native/runtime/terminal_runtime.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef _WIN32
@@ -75,6 +76,63 @@ int main(void) {
   terminal_emulator_for_each_line(emulator, -1, 2, inspect_scrollback, NULL);
   if (scrollback_position != 1 || scrollback_total < 1 || !saw_scrollback)
     return 5;
+  terminal_emulator_feed(emulator, "\x1B[?1006h", 8);
+  const char* title_sequence = "\x1B]0;checkpoint-title\a";
+  terminal_emulator_feed(emulator, title_sequence, strlen(title_sequence));
+  int source_mouse_encoding;
+  terminal_emulator_modes(emulator, NULL, NULL, NULL, &source_mouse_encoding, NULL, NULL);
+  const char* source_name = terminal_emulator_name(emulator);
+  if (source_mouse_encoding != 1
+      || !source_name || strcmp(source_name, "checkpoint-title") != 0)
+    return 6;
+
+  size_t checkpoint_size = terminal_emulator_checkpoint_size(emulator);
+  void* checkpoint = malloc(checkpoint_size);
+  size_t checkpoint_written = 0;
+  if (!checkpoint_size || !checkpoint
+      || !terminal_emulator_checkpoint(emulator, checkpoint, checkpoint_size,
+        &checkpoint_written)
+      || checkpoint_written != checkpoint_size) {
+    free(checkpoint);
+    terminal_emulator_free(emulator);
+    return 7;
+  }
+  terminal_emulator_t* restored = terminal_emulator_new(5, 2, 2, "xterm");
+  if (!restored || !terminal_emulator_restore_checkpoint(
+      restored, checkpoint, checkpoint_written)) {
+    free(checkpoint);
+    terminal_emulator_free(restored);
+    terminal_emulator_free(emulator);
+    return 8;
+  }
+  if (terminal_emulator_restore_checkpoint(restored, checkpoint,
+      checkpoint_written - 1)) {
+    free(checkpoint);
+    terminal_emulator_free(restored);
+    terminal_emulator_free(emulator);
+    return 9;
+  }
+  int restored_columns, restored_rows;
+  int restored_mouse_encoding;
+  terminal_emulator_dimensions(restored, &restored_columns, &restored_rows);
+  terminal_emulator_cursor(restored, &column, &row, &mode);
+  terminal_emulator_modes(restored, NULL, NULL, NULL, &restored_mouse_encoding, NULL, NULL);
+  terminal_emulator_scrollback(restored, -1, &scrollback_position, &scrollback_total);
+  saw_scrollback = 0;
+  terminal_emulator_for_each_line(restored, -1, 2, inspect_scrollback, NULL);
+  if (restored_columns != 20 || restored_rows != 4
+      || column != 0 || row != 3
+      || restored_mouse_encoding != 1
+      || !terminal_emulator_name(restored)
+      || strcmp(terminal_emulator_name(restored), "checkpoint-title") != 0
+      || scrollback_position != 1 || scrollback_total < 1 || !saw_scrollback) {
+    free(checkpoint);
+    terminal_emulator_free(restored);
+    terminal_emulator_free(emulator);
+    return 10;
+  }
+  free(checkpoint);
+  terminal_emulator_free(restored);
 
   terminal_emulator_free(emulator);
 
@@ -87,7 +145,7 @@ int main(void) {
     80, 24, 100, "xterm-256color", "/bin/sh", arguments, environment, "/tmp"
   );
   if (!runtime)
-    return 6;
+    return 11;
 
   int exited = 0;
   for (int i = 0; i < 200 && !strstr(output, "native-runtime-output"); ++i) {
@@ -101,6 +159,6 @@ int main(void) {
   }
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
-  return strstr(output, "native-runtime-output") ? 0 : 7;
+  return strstr(output, "native-runtime-output") ? 0 : 12;
 #endif
 }
