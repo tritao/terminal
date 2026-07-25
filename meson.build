@@ -3,7 +3,7 @@ project(
   'c',
   version: '1.0.0',
   meson_version: '>= 0.63',
-  default_options: ['c_std=gnu11', 'warning_level=2', 'werror=true']
+  default_options: ['c_std=gnu11', 'warning_level=3', 'werror=true']
 )
 
 cc = meson.get_compiler('c')
@@ -100,6 +100,10 @@ pragtical_native_plugin_target = shared_module(
   'terminal',
   'src/libterminal.c',
   dependencies: terminal_dependencies + [terminal_core_dep],
+  # The entrypoint includes the bundled Pragtical API header, which may be
+  # older than the header used by an embedding checkout. Keep this boundary
+  # at -Wall -Wextra while native terminal code is checked with -Wpedantic.
+  override_options: ['warning_level=2'],
   name_prefix: 'lib',
   install: true,
   install_dir: get_option('data_dir') / 'plugins' / 'terminal'
