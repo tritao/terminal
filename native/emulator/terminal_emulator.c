@@ -57,7 +57,9 @@ static color_t UNSET_COLOR = { .attributes = ATTRIBUTE_UNSET_COLOR, .index = 0 }
 static color_t INVERSE_COLOR = { .attributes = ATTRIBUTE_INVERSE_COLOR, .index = 0 };
 static color_t UNTARGETED_COLOR = { .attributes = ATTRIBUTE_UNTARGETED_COLOR, .index = 0 };
 
-#define LIBTERMINAL_NO_STYLING (buffer_styling_t) { UNSET_COLOR, UNSET_COLOR }
+#define LIBTERMINAL_NO_STYLING ((buffer_styling_t) { \
+  .foreground = UNSET_COLOR, .background = UNSET_COLOR \
+})
 
 typedef struct buffer_styling_t {
   union {
@@ -1048,7 +1050,7 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
         }
       } break;
       case 'c': {
-        terminal_input(terminal, "\e[?1;2c", 7);
+        terminal_input(terminal, "\033[?1;2c", 7);
       } break;
       case 'd': view->cursor_y = min(max(max(parse_number(&seq[2], 1), 1) - 1, 0), terminal->lines - 1); break;
       case 'h': {
@@ -1070,8 +1072,8 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
               case 2004: terminal->paste_mode = PASTE_BRACKETED; break;
               default: unhandled = 1; break;
             }
-            if ((next = strstr(next, ";")))
-              next++;
+            const char* separator = strstr(next, ";");
+            next = separator ? separator + 1 : NULL;
           }
         }
       } break;
@@ -1096,8 +1098,8 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
               case 2004: terminal->paste_mode = PASTE_NORMAL; break;
               default: unhandled = 1; break;
             }
-            if (next = strstr(next, ";"))
-              next++;
+            const char* separator = strstr(next, ";");
+            next = separator ? separator + 1 : NULL;
           }
         }
       } break;
@@ -1249,7 +1251,8 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           strncpy(terminal->name, &seq[4], min(sizeof(terminal->name) - 1, strlen(seq) - 4));
       break;
       case '4': {
-        int idx, r,g,b;
+        int idx;
+        unsigned int r, g, b;
         if (sscanf(&seq[3], ";%d;rgb:%x/%x/%x", &idx, &r, &g, &b) == 4) {
           view->palette[idx] = rgb_color(r, g, b);
         } else
@@ -1431,9 +1434,12 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
       escape_type = parse_partial_sequence(terminal->buffered_sequence, buffered_sequence_index, &fixed_width);
       if (
         (escape_type == ESCAPE_TYPE_CSI && buffered_sequence_index > 2 && str[offset] >= 0x40 && str[offset] <= 0x7E) ||
-        (escape_type == ESCAPE_TYPE_OS && ((offset < len - 1 && (str[offset+1] == '\a') || (offset < len - 2 && str[offset+1] == 0x1B && str[offset+2] == 0x5C)))) ||
+        (escape_type == ESCAPE_TYPE_OS &&
+          ((offset < len - 1 && str[offset+1] == '\a') ||
+           (offset < len - 2 && str[offset+1] == 0x1B && str[offset+2] == 0x5C))) ||
         (escape_type == ESCAPE_TYPE_UNKNOWN && str[offset] == 0x1B) ||
-        (escape_type == ESCAPE_TYPE_FIXED_WIDTH && buffered_sequence_index == fixed_width || str[offset] == 0x1B)
+        ((escape_type == ESCAPE_TYPE_FIXED_WIDTH && buffered_sequence_index == fixed_width) ||
+          str[offset] == 0x1B)
       ) {
         terminal->buffered_sequence[buffered_sequence_index++] = 0;
         terminal_escape_sequence(terminal, escape_type, terminal->buffered_sequence);
@@ -1455,7 +1461,7 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
     } else {
       int end = (view->scrolling_region_end == -1 ? terminal->lines : view->scrolling_region_end);
       offset += utf8_to_codepoint(&str[offset], &codepoint);
-      if (codepoint != '\e')
+      if (codepoint != 0x1B)
         view->last_graphical_character = 0;
       switch (codepoint) {
         case 0x00:
