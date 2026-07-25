@@ -1,4 +1,5 @@
 name: CI
+# Keep the development branch covered while the terminal API evolves.
 on: { push: { branches: [master, next] } }
 permissions: write-all
 
