@@ -24,6 +24,26 @@ static terminal_binding_t* lua_toterminal(lua_State* L, int index) {
   return terminal;
 }
 
+static int check_int(lua_State* L, int index) {
+  lua_Integer value = luaL_checkinteger(L, index);
+  if (value < INT_MIN || value > INT_MAX)
+    luaL_error(L, "integer argument %d is out of range", index);
+  return (int)value;
+}
+
+static char* duplicate_string(const char* source) {
+  if (!source)
+    return NULL;
+  size_t length = strlen(source);
+  if (length == SIZE_MAX)
+    return NULL;
+  char* result = malloc(length + 1);
+  if (!result)
+    return NULL;
+  memcpy(result, source, length + 1);
+  return result;
+}
+
 static void push_style(lua_State* L, uint64_t style, int* group) {
   char value[24];
   snprintf(value, sizeof(value), "%" PRIu64, style);
@@ -90,10 +110,14 @@ static int f_terminal_lines(lua_State* L) {
 
   int start = -current;
   if (lua_gettop(L) >= 2)
-    start = luaL_checkinteger(L, 2);
+    start = check_int(L, 2);
   int end = start + rows;
-  if (lua_gettop(L) >= 3)
-    end = luaL_checkinteger(L, 3) + 1;
+  if (lua_gettop(L) >= 3) {
+    int requested_end = check_int(L, 3);
+    if (requested_end == INT_MAX)
+      return luaL_error(L, "terminal line range is too large");
+    end = requested_end + 1;
+  }
 
   lua_newtable(L);
   terminal_lines_context_t context = {
@@ -126,9 +150,9 @@ static const char* lua_toutf8(lua_State* L, LPCWSTR str) {
 #endif
 
 static int f_terminal_new(lua_State* L) {
-  int columns = luaL_checkinteger(L, 1);
-  int rows = luaL_checkinteger(L, 2);
-  int scrollback_limit = luaL_checkinteger(L, 3);
+  int columns = check_int(L, 1);
+  int rows = check_int(L, 2);
+  int scrollback_limit = check_int(L, 3);
   const char* term = luaL_checkstring(L, 4);
   const char* command = luaL_checkstring(L, 5);
   char* arguments[256] = {0};
@@ -142,7 +166,7 @@ static int f_terminal_new(lua_State* L) {
         lua_pop(L, 1);
         break;
       }
-      arguments[i + 1] = strdup(luaL_checkstring(L, -1));
+      arguments[i + 1] = duplicate_string(luaL_checkstring(L, -1));
       lua_pop(L, 1);
     }
   }
@@ -163,8 +187,8 @@ static int f_terminal_new(lua_State* L) {
   lua_pushnil(L);
   int environment_index = 0;
   while (lua_next(L, 7) != 0 && environment_index < 255) {
-    environment[environment_index++] = strdup(lua_tostring(L, -2));
-    environment[environment_index++] = strdup(lua_tostring(L, -1));
+    environment[environment_index++] = duplicate_string(lua_tostring(L, -2));
+    environment[environment_index++] = duplicate_string(lua_tostring(L, -1));
     lua_pop(L, 1);
   }
 #endif
@@ -319,7 +343,7 @@ static int f_terminal_restore_checkpoint(lua_State* L) {
 static int f_terminal_size(lua_State* L) {
   terminal_core_t* terminal = lua_toterminal(L, 1)->core;
   if (lua_gettop(L) > 1)
-    terminal_core_resize(terminal, luaL_checkinteger(L, 2), luaL_checkinteger(L, 3));
+    terminal_core_resize(terminal, check_int(L, 2), check_int(L, 3));
   int columns, rows;
   terminal_core_dimensions(terminal, &columns, &rows);
   lua_pushinteger(L, columns);
@@ -372,7 +396,7 @@ static int f_terminal_keypad_keys_mode(lua_State* L) {
 static int f_terminal_scrollback(lua_State* L) {
   int position = -1;
   if (lua_gettop(L) >= 2)
-    position = luaL_checkinteger(L, 2);
+    position = check_int(L, 2);
   int current, total;
   terminal_core_scrollback(lua_toterminal(L, 1)->core, position, &current, &total);
   lua_pushinteger(L, current);
