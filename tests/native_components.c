@@ -11,7 +11,7 @@
 #include <unistd.h>
 #endif
 
-static char output[256];
+static char output[4096];
 static size_t output_length;
 static int saw_hello;
 static int saw_scrollback;
