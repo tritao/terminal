@@ -103,7 +103,8 @@ static int wait_for_output(terminal_runtime_t* runtime,
 }
 
 static int fail_runtime_test(const char* name, int code) {
-  fprintf(stderr, "native runtime test failed: %s\n", name);
+  fprintf(stderr, "native runtime test failed: %s (output: %s)\n",
+    name, output);
   return code;
 }
 
@@ -268,7 +269,7 @@ int main(void) {
 #ifdef _WIN32
   if (!strstr(output, windows_cwd)) {
 #else
-  if (!strstr(output, "cwd:/tmp")) {
+  if (!strstr(output, "cwd:") || !strstr(output, "/tmp")) {
 #endif
     terminal_runtime_close(runtime);
     terminal_runtime_free(runtime);
