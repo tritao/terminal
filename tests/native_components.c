@@ -317,7 +317,10 @@ int main(void) {
     return fail_runtime_test("input delivery", 20);
   }
 #ifdef _WIN32
-  if (!strstr(output, "Lines:") || !strstr(output, "Columns:")) {
+  if ((!strstr(output, "Lines:")
+      && !wait_for_output(runtime, "Lines:", 1000))
+      || (!strstr(output, "Columns:")
+        && !wait_for_output(runtime, "Columns:", 1000))) {
 #else
   if (!strstr(output, "33 101")) {
 #endif
