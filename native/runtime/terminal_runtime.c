@@ -361,20 +361,24 @@ terminal_runtime_t* terminal_runtime_new(
     goto error;
   }
 
-  HANDLE handles_to_inherit[] = {
-    in_pipe_pseudo_console_side, out_pipe_pseudo_console_side
-  };
   startup.StartupInfo.cb = sizeof(STARTUPINFOEXW);
   startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-  startup.StartupInfo.hStdInput = in_pipe_pseudo_console_side;
-  startup.StartupInfo.hStdOutput = out_pipe_pseudo_console_side;
-  startup.StartupInfo.hStdError = out_pipe_pseudo_console_side;
+  /*
+   * The pseudo console owns the child's standard handles.  Passing the
+   * host-side pipe handles here makes stdin compete with ConPTY's input
+   * channel, so input can be consumed by the wrong endpoint.  Explicitly
+   * clear the standard handles while retaining STARTF_USESTDHANDLES; this
+   * prevents inherited runner handles from bypassing the pseudo console.
+   */
+  startup.StartupInfo.hStdInput = NULL;
+  startup.StartupInfo.hStdOutput = NULL;
+  startup.StartupInfo.hStdError = NULL;
   SIZE_T list_size = 0;
-  InitializeProcThreadAttributeList(NULL, 2, 0, &list_size);
+  InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
   startup.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size);
   if (!startup.lpAttributeList
       || !InitializeProcThreadAttributeList(
-        startup.lpAttributeList, 2, 0, &list_size)) {
+        startup.lpAttributeList, 1, 0, &list_size)) {
     set_error_step("update proc attribute list");
     last_error_code = GetLastError();
     goto error;
@@ -382,10 +386,7 @@ terminal_runtime_t* terminal_runtime_new(
   attribute_list_initialized = TRUE;
   if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0,
         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, runtime->hpcon, sizeof(HPCON),
-        NULL, NULL)
-      || !UpdateProcThreadAttribute(startup.lpAttributeList, 0,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles_to_inherit,
-        sizeof(handles_to_inherit), NULL, NULL)) {
+        NULL, NULL)) {
     set_error_step("update proc attribute list");
     last_error_code = GetLastError();
     goto error;
@@ -405,7 +406,7 @@ terminal_runtime_t* terminal_runtime_new(
       goto error;
     }
   }
-  BOOL success = CreateProcessW(NULL, commandline, NULL, NULL, TRUE,
+  BOOL success = CreateProcessW(NULL, commandline, NULL, NULL, FALSE,
     EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
     environment && environment[0] ? (void*)environment[0] : NULL,
     working_directory, &startup.StartupInfo,
