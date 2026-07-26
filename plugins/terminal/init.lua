@@ -1195,6 +1195,7 @@ function TerminalView:on_mouse_released(button, x, y)
 end
 
 function TerminalView:on_mouse_left()
+  TerminalView.super.on_mouse_left(self)
   self:set_hovered_link(nil)
   self.cursor = "ibeam"
 end
