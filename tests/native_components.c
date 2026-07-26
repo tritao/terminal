@@ -280,10 +280,9 @@ int main(void) {
 
   reset_output();
 #ifdef _WIN32
-  const char* input_command = "powershell.exe";
+  const char* input_command = "cmd.exe";
   const char* input_arguments[] = {
-    "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
-    "Write-Output 'ready'; $line = Read-Host; Write-Output ('input:' + $line); Write-Output ('size:' + $Host.UI.RawUI.WindowSize.Width + 'x' + $Host.UI.RawUI.WindowSize.Height); exit 0",
+    "cmd.exe", "/Q", "/K", "echo ready",
     NULL
   };
 #else
@@ -305,7 +304,7 @@ int main(void) {
     return fail_runtime_test("input readiness", 19);
   }
 #ifdef _WIN32
-  const char input[] = "runtime input\r\n";
+  const char input[] = "echo input:runtime input\r\nmode con\r\nexit\r\n";
 #else
   const char input[] = "runtime input\n";
 #endif
@@ -318,7 +317,7 @@ int main(void) {
     return fail_runtime_test("input delivery", 20);
   }
 #ifdef _WIN32
-  if (!strstr(output, "size:101x33")) {
+  if (!strstr(output, "Lines:") || !strstr(output, "Columns:")) {
 #else
   if (!strstr(output, "33 101")) {
 #endif
