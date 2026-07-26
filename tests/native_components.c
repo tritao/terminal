@@ -280,10 +280,11 @@ int main(void) {
 
   reset_output();
 #ifdef _WIN32
-  const char* input_command = "cmd.exe";
+  const char* input_command = "powershell.exe";
   const char* input_arguments[] = {
-    "cmd.exe", "/V:ON", "/S", "/C",
-    "echo ready & set /P line= & echo input:!line! & mode con", NULL
+    "powershell.exe", "-NoLogo", "-NoProfile", "-Command",
+    "Write-Output 'ready'; $line = [Console]::ReadLine(); Write-Output ('input:' + $line); Write-Output ('size:' + $Host.UI.RawUI.WindowSize.Width + 'x' + $Host.UI.RawUI.WindowSize.Height); exit 0",
+    NULL
   };
 #else
   const char* input_command = "/bin/sh";
@@ -317,7 +318,7 @@ int main(void) {
     return fail_runtime_test("input delivery", 20);
   }
 #ifdef _WIN32
-  if (!strstr(output, "101") || !strstr(output, "33")) {
+  if (!strstr(output, "size:101x33")) {
 #else
   if (!strstr(output, "33 101")) {
 #endif
