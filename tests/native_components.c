@@ -16,6 +16,11 @@ static size_t output_length;
 static int saw_hello;
 static int saw_scrollback;
 
+static void reset_output(void) {
+  output_length = 0;
+  output[0] = 0;
+}
+
 static void collect_output(char* data, int length, void* user_data) {
   (void)user_data;
   if (length <= 0 || output_length >= sizeof(output) - 1)
@@ -48,6 +53,58 @@ static void inspect_scrollback(int row, uint64_t style, const char* text,
   (void)user_data;
   if (row < 0)
     saw_scrollback = 1;
+}
+
+static void wait_for_runtime_tick(void) {
+#ifdef _WIN32
+  Sleep(10);
+#else
+  usleep(10000);
+#endif
+}
+
+static int wait_for_runtime(terminal_runtime_t* runtime,
+    const char* expected_output, int expected_exit, int timeout_ms,
+    int* exit_code, int* signal) {
+  int exited = 0;
+  int observed_exit = -1;
+  int observed_signal = -1;
+  int iterations = timeout_ms / 10;
+  for (int i = 0; i < iterations; ++i) {
+    int shifts = 0;
+    terminal_runtime_poll(runtime, collect_output, NULL, &shifts);
+    if (!exited)
+      exited = terminal_runtime_exited(runtime, &observed_exit,
+        &observed_signal);
+    if (exited && (!expected_output || strstr(output, expected_output))
+        && observed_exit == expected_exit) {
+      if (exit_code) *exit_code = observed_exit;
+      if (signal) *signal = observed_signal;
+      return 1;
+    }
+    wait_for_runtime_tick();
+  }
+  if (exit_code) *exit_code = observed_exit;
+  if (signal) *signal = observed_signal;
+  return 0;
+}
+
+static int wait_for_output(terminal_runtime_t* runtime,
+    const char* expected_output, int timeout_ms) {
+  int iterations = timeout_ms / 10;
+  for (int i = 0; i < iterations; ++i) {
+    int shifts = 0;
+    terminal_runtime_poll(runtime, collect_output, NULL, &shifts);
+    if (strstr(output, expected_output))
+      return 1;
+    wait_for_runtime_tick();
+  }
+  return 0;
+}
+
+static int fail_runtime_test(const char* name, int code) {
+  fprintf(stderr, "native runtime test failed: %s\n", name);
+  return code;
 }
 
 int main(void) {
@@ -160,21 +217,166 @@ int main(void) {
   if (!runtime)
     return 12;
 
-  int exited = 0;
-  for (int i = 0; i < 200 && !strstr(output, "native runtime output"); ++i) {
-    int shifts = 0;
-    terminal_runtime_poll(runtime, collect_output, NULL, &shifts);
-    int exit_code, signal;
-    exited = terminal_runtime_exited(runtime, &exit_code, &signal);
-    if (exited && i > 20 && !strstr(output, "native runtime output"))
-      break;
-#ifdef _WIN32
-    Sleep(10);
-#else
-    usleep(10000);
-#endif
+  int exit_code, signal;
+  if (!wait_for_runtime(runtime, "native runtime output", 0, 2000,
+      &exit_code, &signal)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("launch and output", 13);
   }
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
-  return strstr(output, "native runtime output") ? 0 : 13;
+
+  reset_output();
+#ifdef _WIN32
+  char windows_cwd[MAX_PATH];
+  if (!GetWindowsDirectoryA(windows_cwd, sizeof(windows_cwd)))
+    return fail_runtime_test("find Windows working directory", 14);
+  const wchar_t windows_environment[] =
+    L"PRAGTICAL_TERMINAL_TEST=present\0\0";
+  const char* launch_command = "cmd.exe";
+  const char* launch_arguments[] = {
+    "cmd.exe", "/S", "/C",
+    "echo env:%PRAGTICAL_TERMINAL_TEST% & cd & exit /b 7", NULL
+  };
+  const char* launch_environment[] = {
+    (const char*)windows_environment, NULL
+  };
+  const char* launch_cwd = windows_cwd;
+#else
+  const char* launch_command = "/bin/sh";
+  const char* launch_arguments[] = {
+    "sh", "-c",
+    "printf 'env:%s cwd:' \"$PRAGTICAL_TERMINAL_TEST\"; pwd; exit 7",
+    "sh", NULL
+  };
+  const char* launch_environment[] = {
+    "PRAGTICAL_TERMINAL_TEST", "present", NULL
+  };
+  const char* launch_cwd = "/tmp";
+#endif
+  runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
+    launch_command, launch_arguments, launch_environment, launch_cwd);
+  if (!runtime)
+    return fail_runtime_test("environment and cwd launch", 15);
+  if (!wait_for_runtime(runtime, "env:present", 7, 2000,
+      &exit_code, &signal)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("environment, cwd, and exit status", 16);
+  }
+#ifdef _WIN32
+  if (!strstr(output, windows_cwd)) {
+#else
+  if (!strstr(output, "cwd:/tmp")) {
+#endif
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("working directory output", 17);
+  }
+  terminal_runtime_close(runtime);
+  terminal_runtime_free(runtime);
+
+  reset_output();
+#ifdef _WIN32
+  const char* input_command = "cmd.exe";
+  const char* input_arguments[] = {
+    "cmd.exe", "/V:ON", "/S", "/C",
+    "echo ready & set /P line= & echo input:!line! & mode con", NULL
+  };
+#else
+  const char* input_command = "/bin/sh";
+  const char* input_arguments[] = {
+    "sh", "-c",
+    "printf 'ready\\n'; read line; printf 'input:%s\\n' \"$line\"; stty size",
+    "sh", NULL
+  };
+#endif
+  runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
+    input_command, input_arguments, NULL, NULL);
+  if (!runtime)
+    return fail_runtime_test("input and resize launch", 18);
+  terminal_runtime_resize(runtime, 101, 33);
+  if (!wait_for_output(runtime, "ready", 1000)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("input readiness", 19);
+  }
+#ifdef _WIN32
+  const char input[] = "runtime input\r\n";
+#else
+  const char input[] = "runtime input\n";
+#endif
+  if (terminal_runtime_write(runtime, input, strlen(input))
+      != (int)strlen(input)
+      || !wait_for_runtime(runtime, "input:runtime input", 0, 2000,
+        &exit_code, &signal)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("input delivery", 20);
+  }
+#ifdef _WIN32
+  if (!strstr(output, "101") || !strstr(output, "33")) {
+#else
+  if (!strstr(output, "33 101")) {
+#endif
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("resize delivery", 21);
+  }
+  terminal_runtime_close(runtime);
+  terminal_runtime_free(runtime);
+
+#ifndef _WIN32
+  reset_output();
+  const char* eof_arguments[] = {
+    "sh", "-c", "printf 'ready\\n'; cat; printf 'eof\\n'", "sh", NULL
+  };
+  runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
+    "/bin/sh", eof_arguments, NULL, NULL);
+  if (!runtime)
+    return fail_runtime_test("EOF launch", 22);
+  if (!wait_for_output(runtime, "ready", 1000)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("EOF readiness", 23);
+  }
+  const char eof = '\004';
+  if (terminal_runtime_write(runtime, &eof, 1) != 1
+      || !wait_for_runtime(runtime, "eof", 0, 2000, &exit_code, &signal)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("EOF delivery", 24);
+  }
+  terminal_runtime_close(runtime);
+  terminal_runtime_free(runtime);
+
+  reset_output();
+  const char* interrupt_arguments[] = {
+    "sh", "-c",
+    "trap 'printf interrupt\\n; exit 0' INT; printf 'ready\\n'; while :; do sleep 1; done",
+    "sh", NULL
+  };
+  runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
+    "/bin/sh", interrupt_arguments, NULL, NULL);
+  if (!runtime)
+    return fail_runtime_test("interrupt launch", 25);
+  if (!wait_for_output(runtime, "ready", 1000)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("interrupt readiness", 26);
+  }
+  const char interrupt = '\003';
+  if (terminal_runtime_write(runtime, &interrupt, 1) != 1
+      || !wait_for_runtime(runtime, "interrupt", 0, 2000,
+        &exit_code, &signal)) {
+    terminal_runtime_close(runtime);
+    terminal_runtime_free(runtime);
+    return fail_runtime_test("interrupt delivery", 27);
+  }
+  terminal_runtime_close(runtime);
+  terminal_runtime_free(runtime);
+#endif
+
+  return 0;
 }
