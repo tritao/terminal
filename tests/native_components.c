@@ -15,6 +15,7 @@ static char output[4096];
 static size_t output_length;
 static int saw_hello;
 static int saw_scrollback;
+static uint64_t observed_style;
 
 static void reset_output(void) {
   output_length = 0;
@@ -53,6 +54,15 @@ static void inspect_scrollback(int row, uint64_t style, const char* text,
   (void)user_data;
   if (row < 0)
     saw_scrollback = 1;
+}
+
+static void inspect_colored_text(int row, uint64_t style, const char* text,
+    int length, int overflow, void* user_data) {
+  (void)row;
+  (void)overflow;
+  (void)user_data;
+  if (memchr(text, 'X', (size_t)length))
+    observed_style = style;
 }
 
 static void wait_for_runtime_tick(void) {
@@ -145,6 +155,20 @@ int main(void) {
   if (source_mouse_encoding != 1
       || !source_name || strcmp(source_name, "checkpoint-title") != 0)
     return 6;
+
+  terminal_emulator_t* color_emulator = terminal_emulator_new(20, 4, 8, "xterm-256color");
+  if (!color_emulator)
+    return 13;
+  const char* color_sequence = "\x1B]4;12;rgb:ff/80/01\a\x1B[38;5;12mX";
+  terminal_emulator_feed(color_emulator, color_sequence, strlen(color_sequence));
+  observed_style = 0;
+  terminal_emulator_for_each_line(color_emulator, 0, 3, inspect_colored_text, NULL);
+  terminal_emulator_free(color_emulator);
+  if ((observed_style & 0xFF) != 3
+      || ((observed_style >> 8) & 0xFF) != 0xFF
+      || ((observed_style >> 16) & 0xFF) != 0x80
+      || ((observed_style >> 24) & 0xFF) != 0x01)
+    return 14;
 
   size_t checkpoint_size = terminal_emulator_checkpoint_size(emulator);
   void* checkpoint = malloc(checkpoint_size);

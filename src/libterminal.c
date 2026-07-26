@@ -1,8 +1,12 @@
 #define PRAGTICAL_PLUGIN_ENTRYPOINT
+#if _WIN32
+  #include <windows.h>
+#endif
 #include <pragtical_plugin_api.h>
 #include "../native/terminal_core.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -146,11 +150,13 @@ static int f_terminal_new(lua_State* L) {
 #if _WIN32
   size_t environment_length;
   const char* environment_string = luaL_checklstring(L, 7, &environment_length);
+  if (environment_length > INT_MAX)
+    return luaL_error(L, "terminal environment is too large");
   LPWSTR utf16_environment = calloc(environment_length, sizeof(WCHAR));
   if (!utf16_environment)
     return luaL_error(L, "failed to allocate terminal environment");
-  MultiByteToWideChar(CP_UTF8, 0, environment_string, environment_length,
-    utf16_environment, environment_length);
+  MultiByteToWideChar(CP_UTF8, 0, environment_string, (int)environment_length,
+    utf16_environment, (int)environment_length);
   environment[0] = (char*)utf16_environment;
 #else
   luaL_checktype(L, 7, LUA_TTABLE);

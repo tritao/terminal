@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <time.h>
@@ -8,6 +9,7 @@
 #include <math.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stddef.h>
 #include "terminal_emulator.h"
 
 #ifndef min
@@ -80,7 +82,7 @@ typedef struct backbuffer_page_t {
   struct backbuffer_page_t* prev;
   struct backbuffer_page_t* next;
   int columns, lines, line;
-  buffer_char_t buffer[];
+  buffer_char_t buffer[1];
 } backbuffer_page_t;
 
 typedef enum view_e {
@@ -607,7 +609,7 @@ static int terminal_emulator_restore_checkpoint_data(terminal_t* terminal,
     if (!checkpoint_multiply_size(&page_cells, page_columns, page_line)
         || page_cells > TERMINAL_CHECKPOINT_MAX_CELLS)
       goto invalid_checkpoint;
-    size_t allocation = sizeof(backbuffer_page_t);
+    size_t allocation = offsetof(backbuffer_page_t, buffer);
     if (!checkpoint_multiply_size(&page_cells, page_columns, page_lines)
         || page_cells > TERMINAL_CHECKPOINT_MAX_CELLS
         || !checkpoint_add_size(&allocation, page_cells * sizeof(buffer_char_t))
@@ -687,27 +689,27 @@ static int utf8_to_codepoint(const char *p, unsigned *dst) {
     res = (res << 6) | (*(++up) & 0x3f);
   }
   *dst = res;
-  return ((const char*)up + 1) - p;
+  return (int)(((const char*)up + 1) - p);
 }
 
 static int codepoint_to_utf8(unsigned int codepoint, char* target) {
   if (codepoint < 128) {
-    *(target++) = codepoint;
+    *(target++) = (char)codepoint;
     return 1;
   } else if (codepoint < 2048) {
-    *(target++) = 0xC0 | (codepoint >> 6);
-    *(target++) = 0x80 | ((codepoint >> 0) & 0x3F);
+    *(target++) = (char)(0xC0 | (codepoint >> 6));
+    *(target++) = (char)(0x80 | ((codepoint >> 0) & 0x3F));
     return 2;
   } else if (codepoint < 65536) {
-    *(target++) = 0xE0 | (codepoint >> 12);
-    *(target++) = 0x80 | ((codepoint >> 6) & 0x3F);
-    *(target++) = 0x80 | ((codepoint >> 0) & 0x3F);
+    *(target++) = (char)(0xE0 | (codepoint >> 12));
+    *(target++) = (char)(0x80 | ((codepoint >> 6) & 0x3F));
+    *(target++) = (char)(0x80 | ((codepoint >> 0) & 0x3F));
     return 3;
   }
-  *(target++) = 0xF0 | (codepoint >> 18);
-  *(target++) = 0x80 | ((codepoint >> 12) & 0x3F);
-  *(target++) = 0x80 | ((codepoint >> 6) & 0x3F);
-  *(target++) = 0x80 | ((codepoint >> 0) & 0x3F);
+  *(target++) = (char)(0xF0 | (codepoint >> 18));
+  *(target++) = (char)(0x80 | ((codepoint >> 12) & 0x3F));
+  *(target++) = (char)(0x80 | ((codepoint >> 6) & 0x3F));
+  *(target++) = (char)(0x80 | ((codepoint >> 0) & 0x3F));
   return 4;
 }
 
@@ -785,7 +787,12 @@ static void terminal_push_scrollback_line(terminal_t* terminal, const buffer_cha
     free(page);
   }
   if (!terminal->scrollback_buffer_start || terminal->scrollback_buffer_start->columns != terminal->columns || terminal->scrollback_buffer_start->line >= terminal->scrollback_buffer_start->lines) {
-    backbuffer_page_t* page = calloc(sizeof(backbuffer_page_t) + LIBTERMINAL_BACKBUFFER_PAGE_LINES*terminal->columns*sizeof(buffer_char_t) + sizeof(int)*LIBTERMINAL_BACKBUFFER_PAGE_LINES, 1);
+    backbuffer_page_t* page = calloc(
+      offsetof(backbuffer_page_t, buffer)
+        + LIBTERMINAL_BACKBUFFER_PAGE_LINES * terminal->columns * sizeof(buffer_char_t)
+        + sizeof(int) * LIBTERMINAL_BACKBUFFER_PAGE_LINES,
+      1
+    );
     if (!terminal->scrollback_buffer_start)
       terminal->scrollback_buffer_end = page;
     backbuffer_page_t* prev = terminal->scrollback_buffer_start;
@@ -906,7 +913,7 @@ static void terminal_switch_buffer(terminal_t* terminal, view_e view) {
     terminal->views[VIEW_ALTERNATE_BUFFER].scrolling_region_end = -1;
     terminal->views[VIEW_ALTERNATE_BUFFER].scrolling_region_start = -1;
     for (int i = 0; i < 256; ++i)
-      terminal->views[VIEW_ALTERNATE_BUFFER].palette[i] = indexed_color(i);
+      terminal->views[VIEW_ALTERNATE_BUFFER].palette[i] = indexed_color((uint8_t)i);
   }
 }
 
@@ -914,6 +921,44 @@ static int parse_number(const char* seq, int def) {
   if (seq[0] >= '0' && seq[0] <= '9')
     return atoi(seq);
   return def;
+}
+
+static int parse_hex_byte(const char** cursor, uint8_t* value) {
+  if (!isxdigit((unsigned char)**cursor))
+    return 0;
+  errno = 0;
+  char* end;
+  unsigned long parsed = strtoul(*cursor, &end, 16);
+  if (errno == ERANGE || end == *cursor || parsed > UINT8_MAX)
+    return 0;
+  *value = (uint8_t)parsed;
+  *cursor = end;
+  return 1;
+}
+
+static int parse_osc_rgb(const char* text, int* index, uint8_t* r, uint8_t* g, uint8_t* b) {
+  const char* cursor = text;
+  if (*cursor++ != ';')
+    return 0;
+
+  errno = 0;
+  char* end;
+  long parsed_index = strtol(cursor, &end, 10);
+  if (errno == ERANGE || end == cursor || parsed_index < 0 || parsed_index > 255 || *end != ';')
+    return 0;
+  ++end;
+  *index = (int)parsed_index;
+
+  if (strncmp(end, "rgb:", 4) != 0)
+    return 0;
+  cursor = end + 4;
+  if (!parse_hex_byte(&cursor, r) || *cursor++ != '/')
+    return 0;
+  if (!parse_hex_byte(&cursor, g) || *cursor++ != '/')
+    return 0;
+  if (!parse_hex_byte(&cursor, b) || *cursor != '\0')
+    return 0;
+  return 1;
 }
 
 typedef enum terminal_escape_type_e {
@@ -938,7 +983,7 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
   int unhandled = 0;
   int end = (view->scrolling_region_end == -1 ? terminal->lines : view->scrolling_region_end);
   if (type == ESCAPE_TYPE_CSI) {
-    int seq_end = strlen(seq) - 1;
+    int seq_end = (int)strlen(seq) - 1;
     switch (seq[seq_end]) {
       case '@': {
         int length = min(max(parse_number(&seq[2], 1), 1), terminal->columns - view->cursor_x);
@@ -1219,7 +1264,7 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           const char* next = strchr(&seq[offset], ';');
           if (!next)
             break;
-          offset = (next - seq) + 1;
+          offset = (int)(next - seq) + 1;
         }
         return 0;
       } break;
@@ -1247,13 +1292,18 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
   } else if (type == ESCAPE_TYPE_OS) {
     switch (seq[2]) {
       case '0':
-        if (strlen(seq) >= 5 && seq[3] == ';')
-          strncpy(terminal->name, &seq[4], min(sizeof(terminal->name) - 1, strlen(seq) - 4));
+        if (strlen(seq) >= 5 && seq[3] == ';') {
+          size_t name_length = strlen(&seq[4]);
+          if (name_length >= sizeof(terminal->name))
+            name_length = sizeof(terminal->name) - 1;
+          memcpy(terminal->name, &seq[4], name_length);
+          terminal->name[name_length] = '\0';
+        }
       break;
       case '4': {
         int idx;
-        unsigned int r, g, b;
-        if (sscanf(&seq[3], ";%d;rgb:%x/%x/%x", &idx, &r, &g, &b) == 4) {
+        uint8_t r, g, b;
+        if (parse_osc_rgb(&seq[3], &idx, &r, &g, &b)) {
           view->palette[idx] = rgb_color(r, g, b);
         } else
           unhandled = 1;
@@ -1275,8 +1325,8 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       } break;
       case 'D':
       case 'E': {
-        int end = (view->scrolling_region_end == -1 ? terminal->lines : min(view->scrolling_region_end, terminal->lines));
-        if (view->cursor_y == end - 1)
+        int region_end = (view->scrolling_region_end == -1 ? terminal->lines : min(view->scrolling_region_end, terminal->lines));
+        if (view->cursor_y == region_end - 1)
           terminal_shift_buffer(terminal);
         else
           view->cursor_y = min(view->cursor_y + 1, terminal->lines - 1);
@@ -1297,9 +1347,9 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       case 'M':
         if (view->scrolling_region_start != -1 && view->scrolling_region_end != -1) {
           int start = min(view->scrolling_region_start, terminal->lines - 1);
-          int end = min(view->scrolling_region_end, terminal->lines);
+          int region_end = min(view->scrolling_region_end, terminal->lines);
           if (view->cursor_y == start) {
-            terminal_scroll_region_down(terminal, start, end, 1);
+            terminal_scroll_region_down(terminal, start, region_end, 1);
           } else if (view->cursor_y > start) {
             --view->cursor_y;
           }
@@ -1418,7 +1468,7 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
   unsigned int codepoint;
   int total_shifts = 0;
   int offset = 0;
-  int buffered_sequence_index = strlen(terminal->buffered_sequence);
+  int buffered_sequence_index = (int)strlen(terminal->buffered_sequence);
   view_t* view = &terminal->views[terminal->current_view];
   int fixed_width = -1;
   terminal_escape_type_e escape_type = parse_partial_sequence(terminal->buffered_sequence, buffered_sequence_index, &fixed_width);
@@ -1591,7 +1641,7 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit) {
     return NULL;
   for (int i = 0; i < VIEW_MAX; ++i) {
     for (int j = 0; j < 256; ++j)
-      terminal->views[i].palette[j] = indexed_color(j);
+      terminal->views[i].palette[j] = indexed_color((uint8_t)j);
     terminal->views[i].scrolling_region_end = -1;
     terminal->views[i].scrolling_region_start = -1;
     terminal->views[i].cursor_styling = LIBTERMINAL_NO_STYLING;
@@ -1775,7 +1825,7 @@ void terminal_emulator_reset(terminal_emulator_t* emulator) {
     view->scrolling_region_end = -1;
     view->tab_size = LIBTERMINAL_DEFAULT_TAB_SIZE;
     for (int color = 0; color < 256; ++color)
-      view->palette[color] = indexed_color(color);
+      view->palette[color] = indexed_color((uint8_t)color);
   }
 }
 
