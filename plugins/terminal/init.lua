@@ -405,13 +405,25 @@ function TerminalView:new(options)
   }
 end
 
+---Invalidate text-derived terminal data after output or geometry changes.
+function TerminalView:invalidate_output_cache()
+  self.output_cache = nil
+  self.links_cache = nil
+end
+
 
 ---Return terminal output with stable logical rows, including scrollback.
 ---@return table[]
 function TerminalView:get_output_lines()
   if not self.terminal then return {} end
-  local _, total_scrollback = self.terminal:scrollback()
-  local _, rows = self.terminal:size()
+  local scrollback, total_scrollback = self.terminal:scrollback()
+  local columns, rows = self.terminal:size()
+  local cache = self.output_cache
+  if cache and cache.scrollback == scrollback
+      and cache.total_scrollback == total_scrollback
+      and cache.columns == columns and cache.rows == rows then
+    return cache.lines
+  end
   local first_row = -total_scrollback
   local result = {}
   for index, line in ipairs(self.terminal:lines(first_row, rows - 1)) do
@@ -420,6 +432,14 @@ function TerminalView:get_output_lines()
       text = line_plain_text(line)
     }
   end
+  self.output_cache = {
+    lines = result,
+    scrollback = scrollback,
+    total_scrollback = total_scrollback,
+    columns = columns,
+    rows = rows
+  }
+  self.links_cache = nil
   return result
 end
 
@@ -520,6 +540,10 @@ function TerminalView:toggle_search_case_sensitive()
 end
 
 function TerminalView:get_links()
+  local output_cache = self.output_cache
+  if self.links_cache and self.links_cache.output_cache == output_cache then
+    return self.links_cache.links
+  end
   local links = {}
   for _, line in ipairs(self:get_output_lines()) do
     for start, raw_url in line.text:gmatch("()([%a][%w+.-]*://[^%s<>]+)") do
@@ -535,6 +559,7 @@ function TerminalView:get_links()
       end
     end
   end
+  self.links_cache = { output_cache = self.output_cache, links = links }
   return links
 end
 
@@ -543,7 +568,8 @@ function TerminalView:get_link_at(x, y)
   local col, screen_row = self:convert_coordinates(x, y)
   local scrollback = self.terminal:scrollback()
   local row = screen_row - scrollback
-  for _, link in ipairs(self:get_links()) do
+  local links = self:get_links()
+  for _, link in ipairs(links) do
     if link.row == row and col >= link.col1 and col < link.col2 then
       return link
     end
@@ -632,8 +658,11 @@ function TerminalView:shift_selection_update()
     end
     shifts = shifts + (self.session.last_shifts or 0)
   end
-  if self.search_state.text ~= "" and content_changed then
-    self:refresh_search(true)
+  if content_changed then
+    self:invalidate_output_cache()
+    if self.search_state.text ~= "" then
+      self:refresh_search(true)
+    end
   end
   if shifts and not self.focused then self.modified_since_last_focus = true end
   if self.selection and shifts then
@@ -715,6 +744,7 @@ function TerminalView:spawn()
     debug = self.options.debug
   }
   self.terminal = self.emulator
+  self:invalidate_output_cache()
   self:attach_session()
   self:start_background()
 end
@@ -727,6 +757,7 @@ function TerminalView:detach_session()
   self.session_attached = false
   self.emulator = nil
   self.terminal = nil
+  self:invalidate_output_cache()
   self.routine = nil
   return session
 end
@@ -762,6 +793,7 @@ function TerminalView:update()
         if self.emulator ~= self.session.emulator then
           self.emulator:resize(self.columns, self.lines)
         end
+        self:invalidate_output_cache()
         self.last_size = { x = self.size.x, y = self.size.y }
       end
     end
@@ -1231,6 +1263,7 @@ function TerminalView:restart()
   self.session = nil
   self.emulator = nil
   self.terminal = nil
+  self:invalidate_output_cache()
   self.routine = nil
   self:update()
 end
@@ -1483,9 +1516,19 @@ command.add(active_terminal_predicate, {
   ["terminal:end-of-medium"] = function(view) view:input("\x19") end,
   ["terminal:file-separator"] = function(view) view:input("\x1C") end,
   ["terminal:group-separator"] = function(view) view:input("\x1D") end,
-  ["terminal:clear"] = function(view) view.terminal:clear() view:input(view.options.newline) end,
-  ["terminal:clear-scrollback"] = function(view) view.terminal:clear_scrollback() end,
-  ["terminal:reset"] = function(view) view.terminal:reset() end,
+  ["terminal:clear"] = function(view)
+    view.terminal:clear()
+    view:invalidate_output_cache()
+    view:input(view.options.newline)
+  end,
+  ["terminal:clear-scrollback"] = function(view)
+    view.terminal:clear_scrollback()
+    view:invalidate_output_cache()
+  end,
+  ["terminal:reset"] = function(view)
+    view.terminal:reset()
+    view:invalidate_output_cache()
+  end,
   ["terminal:select-all"] = function(view)
     local _, total_scrollback = view.terminal:scrollback()
     view.selection = { 0, -total_scrollback, view.columns, view.lines - 1 }

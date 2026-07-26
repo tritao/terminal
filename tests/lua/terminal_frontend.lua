@@ -39,6 +39,26 @@ test.describe("terminal frontend", function()
     emulator:close()
   end)
 
+  test.test("searches correctly while already scrolled back", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local view, emulator = new_view(
+      "old target\r\nmiddle line\r\nvisible target", { rows = 2 }
+    )
+    local cached_lines = view:get_output_lines()
+    test.equal(view:get_output_lines(), cached_lines)
+    local _, total_scrollback = emulator:scrollback()
+    test.ok(total_scrollback > 0)
+    emulator:scrollback(total_scrollback)
+    test.not_equal(view:get_output_lines(), cached_lines)
+
+    local matches = view:find_matches("target", false)
+    test.equal(#matches, 2)
+    view:set_search_text("visible")
+    test.equal(view.search_state.match.text, "visible")
+    test.equal(emulator:scrollback(), 0)
+    emulator:close()
+  end)
+
   test.test("detects URLs in terminal text and trims punctuation", function()
     test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
     local view, emulator = new_view(
@@ -47,8 +67,69 @@ test.describe("terminal frontend", function()
     )
     local links = view:get_links()
     test.equal(#links, 2)
+    test.equal(view:get_links(), links)
     test.equal(links[1].url, "https://example.com/path")
     test.equal(links[2].url, "http://localhost:8080/x")
+    emulator:close()
+  end)
+
+  test.test("invalidates cached links when session output arrives", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local emulator = terminal.new_emulator { columns = 40, rows = 3, scrollback = 16 }
+    local pending = true
+    local session = terminal.Session {
+      id = "frontend-cache-session",
+      emulator = emulator,
+      write = function() end,
+      resize = function() end,
+      poll_events = function()
+        if not pending then return {} end
+        pending = false
+        return {
+          { type = "output", runtime_id = "frontend-cache-session",
+            offset = 0, data = "https://new.example" }
+        }
+      end
+    }
+    local view = terminal.class { session = session, emulator = emulator }
+    test.equal(#view:get_links(), 0)
+    view:shift_selection_update()
+    test.equal(view:get_links()[1].url, "https://new.example")
+    view:close()
+    emulator:close()
+  end)
+
+  test.test("clears a hovered link when the mouse leaves", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local view, emulator = new_view("https://example.com")
+    view.convert_coordinates = function() return 2, 0, 2 end
+    view:on_mouse_moved(100, 100, 0, 0)
+    test.equal(view.hovered_link_url, "https://example.com")
+    view:on_mouse_left()
+    test.is_nil(view.hovered_link_url)
+    test.equal(view.cursor, "ibeam")
+    emulator:close()
+  end)
+
+  test.test("registers terminal link context-menu actions", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local contextmenu_available, contextmenu = pcall(require, "plugins.contextmenu")
+    test.skip_if(not contextmenu_available, "context menu plugin is unavailable: " .. tostring(contextmenu))
+    local view, emulator = new_view("https://example.com")
+    local node = core.root_view:get_primary_node()
+    node:add_view(view)
+    core.set_active_view(view)
+    view.convert_coordinates = function() return 2, 0, 2 end
+
+    test.ok(contextmenu:show(0, 0))
+    local items = {}
+    for _, item in ipairs(contextmenu.items) do
+      if item.text then items[item.text] = true end
+    end
+    test.ok(items["Open Link"])
+    test.ok(items["Copy Link"])
+    contextmenu:hide()
+    view:close()
     emulator:close()
   end)
 
