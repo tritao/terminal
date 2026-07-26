@@ -340,7 +340,39 @@ end
 
 
 
+local function text_length(text)
+  return (string.ulen and string.ulen(text)) or #text
+end
+
+local function text_lower(text)
+  return (string.ulower and string.ulower(text)) or text:lower()
+end
+
+local function line_plain_text(line)
+  local text = {}
+  for i = 2, #line, 2 do
+    text[#text + 1] = line[i]
+  end
+  text = table.concat(text)
+  if text:sub(-1) == "\n" then text = text:sub(1, -2) end
+  return text
+end
+
+local trailing_url_characters = {
+  ["."] = true, [","] = true, [";"] = true, [":"] = true,
+  ["!"] = true, ["?"] = true, [")"] = true, ["]"] = true,
+  ["}"] = true
+}
+
+local function trim_url(url)
+  while trailing_url_characters[url:sub(-1)] do
+    url = url:sub(1, -2)
+  end
+  return url
+end
+
 local TerminalView = View:extend()
+local search_view
 
 function TerminalView:get_name()
   local name = self.terminal and self.terminal:name()
@@ -364,6 +396,188 @@ function TerminalView:new(options)
   self.modified_since_last_focus = false
   self.mouse_buttons = {}
   self.session_attached = false
+  self.search_state = {
+    text = "",
+    case_sensitive = config.find_case_sensitive or false,
+    matches = {},
+    index = 0,
+    match = nil
+  }
+end
+
+
+---Return terminal output with stable logical rows, including scrollback.
+---@return table[]
+function TerminalView:get_output_lines()
+  if not self.terminal then return {} end
+  local _, total_scrollback = self.terminal:scrollback()
+  local _, rows = self.terminal:size()
+  local first_row = -total_scrollback
+  local result = {}
+  for index, line in ipairs(self.terminal:lines(first_row, rows - 1)) do
+    result[#result + 1] = {
+      row = first_row + index - 1,
+      text = line_plain_text(line)
+    }
+  end
+  return result
+end
+
+---Find plain-text matches in the complete terminal buffer.
+---@param query string
+---@param case_sensitive boolean?
+---@return table[]
+function TerminalView:find_matches(query, case_sensitive)
+  if not self.terminal or query == nil or query == "" then return {} end
+  case_sensitive = case_sensitive == nil and self.search_state.case_sensitive or case_sensitive
+  local needle = case_sensitive and query or text_lower(query)
+  local matches = {}
+  for _, line in ipairs(self:get_output_lines()) do
+    local haystack = case_sensitive and line.text or text_lower(line.text)
+    local offset = 1
+    while true do
+      local start, finish = haystack:find(needle, offset, true)
+      if not start then break end
+      local prefix = line.text:sub(1, start - 1)
+      local match_text = line.text:sub(start, finish)
+      local col1 = text_length(prefix)
+      matches[#matches + 1] = {
+        row = line.row,
+        col1 = col1,
+        col2 = col1 + text_length(match_text),
+        text = match_text
+      }
+      offset = finish + 1
+    end
+  end
+  return matches
+end
+
+local function same_match(left, right)
+  return left and right
+    and left.row == right.row
+    and left.col1 == right.col1
+    and left.col2 == right.col2
+end
+
+function TerminalView:refresh_search(preserve_match)
+  local state = self.search_state
+  local old_match = preserve_match and state.match
+  state.matches = self:find_matches(state.text, state.case_sensitive)
+  state.index = 0
+  if old_match then
+    for index, match in ipairs(state.matches) do
+      if same_match(match, old_match) then
+        state.index = index
+        break
+      end
+    end
+  end
+  if state.index == 0 and #state.matches > 0 then state.index = 1 end
+  state.match = state.matches[state.index]
+  self.search_matches = state.matches
+  self.active_search_match = state.match
+  core.redraw = true
+  return state.matches
+end
+
+function TerminalView:set_search_text(text)
+  self.search_state.text = text or ""
+  local matches = self:refresh_search(false)
+  if self.search_state.match then self:reveal_search_match() end
+  return matches
+end
+
+function TerminalView:reveal_search_match()
+  local match = self.search_state.match
+  if not match or not self.terminal then return end
+  local _, total_scrollback = self.terminal:scrollback()
+  local target_scrollback = math.min(total_scrollback, math.max(0, -match.row))
+  self.terminal:scrollback(target_scrollback)
+end
+
+function TerminalView:search_next(reverse)
+  local state = self.search_state
+  if state.text == "" then return nil end
+  if #state.matches == 0 then
+    self:refresh_search(false)
+  end
+  if #state.matches == 0 then return nil end
+  local step = reverse and -1 or 1
+  state.index = ((state.index - 1 + step) % #state.matches) + 1
+  state.match = state.matches[state.index]
+  self.active_search_match = state.match
+  self:reveal_search_match()
+  core.redraw = true
+  return state.match
+end
+
+function TerminalView:toggle_search_case_sensitive()
+  self.search_state.case_sensitive = not self.search_state.case_sensitive
+  self:refresh_search(true)
+  self:reveal_search_match()
+  return self.search_state.case_sensitive
+end
+
+function TerminalView:get_links()
+  local links = {}
+  for _, line in ipairs(self:get_output_lines()) do
+    for start, raw_url in line.text:gmatch("()([%a][%w+.-]*://[^%s<>]+)") do
+      local url = trim_url(raw_url)
+      if url ~= "" then
+        local prefix = line.text:sub(1, start - 1)
+        links[#links + 1] = {
+          url = url,
+          row = line.row,
+          col1 = text_length(prefix),
+          col2 = text_length(prefix) + text_length(url)
+        }
+      end
+    end
+  end
+  return links
+end
+
+function TerminalView:get_link_at(x, y)
+  if not self.terminal then return nil end
+  local col, screen_row = self:convert_coordinates(x, y)
+  local scrollback = self.terminal:scrollback()
+  local row = screen_row - scrollback
+  for _, link in ipairs(self:get_links()) do
+    if link.row == row and col >= link.col1 and col < link.col2 then
+      return link
+    end
+  end
+end
+
+function TerminalView:set_hovered_link(link)
+  local url = link and link.url
+  if self.hovered_link_url == url
+    and (not link or not self.hovered_link
+      or (self.hovered_link.row == link.row and self.hovered_link.col1 == link.col1))
+  then
+    return
+  end
+  self.hovered_link = link
+  self.hovered_link_url = url
+  if url then
+    core.status_view:show_tooltip("Open " .. url)
+  else
+    core.status_view:remove_tooltip()
+  end
+  core.redraw = true
+end
+
+function TerminalView:open_link(url)
+  if url then common.open_in_system(url) end
+end
+
+function TerminalView:open_link_at(x, y)
+  local link = self:get_link_at(x, y)
+  if link then
+    self:open_link(link.url)
+    return link
+  end
 end
 
 
@@ -384,14 +598,19 @@ end
 
 function TerminalView:shift_selection_update()
   local shifts = 0
+  local content_changed = false
   if self.session then
     if not self:attach_session() then return 0 end
     local events = self.session:poll_events()
     local capabilities = self.session.capabilities or {}
     for _, event in ipairs(events) do
-      if event.type == "output" and not capabilities.events_applied then
-        shifts = shifts + (self.emulator:feed(event.data) or 0)
+      if event.type == "output" then
+        content_changed = true
+        if not capabilities.events_applied then
+          shifts = shifts + (self.emulator:feed(event.data) or 0)
+        end
       elseif event.type == "checkpoint" then
+        content_changed = true
         local emulator, message
         if self.session.apply_checkpoint then
           emulator, message = self.session:apply_checkpoint(event, self.emulator)
@@ -412,6 +631,9 @@ function TerminalView:shift_selection_update()
       end
     end
     shifts = shifts + (self.session.last_shifts or 0)
+  end
+  if self.search_state.text ~= "" and content_changed then
+    self:refresh_search(true)
   end
   if shifts and not self.focused then self.modified_since_last_focus = true end
   if self.selection and shifts then
@@ -555,9 +777,10 @@ function TerminalView:update()
       self.cursor = "ibeam"
       if self.terminal:mouse_tracking_mode()
          or self.v_scrollbar.hovering.track
-         or self.v_scrollbar.hovering.track then
+         or self.hovered_link_url then
         self.cursor = "arrow"
       end
+      if self.hovered_link_url then self.cursor = "hand" end
       if (core.active_view == self and not self.focused) or (core.active_view ~= self and self.focused) then
         self.focused = core.active_view == self
         self.modified_since_last_focus = false
@@ -634,6 +857,39 @@ end
 
 
 local contrast_foreground = {}
+
+local function apply_text_range(sections, range_start, range_end, background,
+    foreground, subfunc, lengthfunc)
+  local result = {}
+  local offset = 0
+  for _, section in ipairs(sections) do
+    local text = section[3]
+    local length = lengthfunc(text)
+    local start = math.max(range_start, offset)
+    local finish = math.min(range_end, offset + length)
+    if start < finish then
+      if start > offset then
+        result[#result + 1] = {
+          section[1], section[2], subfunc(text, 1, start - offset)
+        }
+      end
+      result[#result + 1] = {
+        background, foreground,
+        subfunc(text, start - offset + 1, finish - offset)
+      }
+      if finish < offset + length then
+        result[#result + 1] = {
+          section[1], section[2], subfunc(text, finish - offset + 1)
+        }
+      end
+    else
+      result[#result + 1] = section
+    end
+    offset = offset + length
+  end
+  return result
+end
+
 function TerminalView:draw()
   TerminalView.super.draw_background(self, self.options.background)
   if self.terminal then
@@ -694,6 +950,23 @@ function TerminalView:draw()
           elseif (idx == selection[2] and selection[1] < offset + length and selection[1] >= offset) and (selection[4] > idx or (selection[4] == idx and selection[3] >= offset + length)) then -- overlaps end
             sections = { { background, foreground, subfunc(text, 1, selection[1] - offset) }, { foreground, background, subfunc(text, selection[1] - offset + 1, length) } }
           end
+        end
+        local active_match = self.active_search_match
+        if active_match and active_match.row == idx then
+          sections = apply_text_range(
+            sections, active_match.col1 - offset, active_match.col2 - offset,
+            style.search_selection or style.selection,
+            style.search_selection_text or style.text,
+            subfunc, lengthfunc
+          )
+        end
+        local hovered_link = self.hovered_link
+        if hovered_link and hovered_link.row == idx then
+          sections = apply_text_range(
+            sections, hovered_link.col1 - offset, hovered_link.col2 - offset,
+            style.line_highlight or style.selection, style.accent,
+            subfunc, lengthfunc
+          )
         end
         -- split sections further, to insert an inverted bit for the cursor
         if should_draw_cursor and cursor_x >= offset and cursor_x < offset + length then
@@ -815,6 +1088,10 @@ function TerminalView:on_mouse_pressed(button, x, y, clicks)
     self:send_mouse_event(button_code, col, row, "M", mouse_encoding)
     return true
   end
+  if button == "left" and self:open_link_at(x, y) then
+    self.selection = nil
+    return true
+  end
   if button == "left" then
     if clicks % 4 == 1 then
       self.selection = nil
@@ -851,6 +1128,9 @@ function TerminalView:on_mouse_moved(x, y, dx, dy)
       self:send_mouse_event(button_code + 32, col, row, "M", mouse_encoding)
       return true
     end
+  end
+  if not self.pressing and not self.word_selecting and not self.row_selecting then
+    self:set_hovered_link(self:get_link_at(x, y))
   end
   if self.pressing or self.word_selecting or self.row_selecting then
     if y < self.position.y then
@@ -912,6 +1192,11 @@ function TerminalView:on_mouse_released(button, x, y)
     self.row_selecting = nil
     self.scrolling_offscreen = nil
   end
+end
+
+function TerminalView:on_mouse_left()
+  self:set_hovered_link(nil)
+  self.cursor = "ibeam"
 end
 
 
@@ -1032,6 +1317,101 @@ end, {
 local active_terminal_predicate = function(...)
   return (core.active_view:is(TerminalView) and core.active_view.terminal), core.active_view, ...
 end
+
+local function terminal_search_predicate()
+  local view
+  if core.active_view and core.active_view:is(TerminalView) then
+    view = core.active_view
+  elseif search_view and core.active_view == core.command_view then
+    view = search_view
+  end
+  local state = view and view.search_state
+  local active = state and (state.text ~= "" or core.active_view == core.command_view)
+  return active and view.terminal, view
+end
+
+local function terminal_search_tooltip(view)
+  local state = view.search_state
+  local next_binding = keymap.get_binding("terminal:search-next")
+  local previous_binding = keymap.get_binding("terminal:search-previous")
+  local case_binding = keymap.get_binding("terminal:search-toggle-case-sensitive")
+  return (state.case_sensitive and "[Sensitive] " or "")
+    .. (next_binding and ("Press " .. next_binding .. " for next. ") or "")
+    .. (previous_binding and ("Press " .. previous_binding .. " for previous. ") or "")
+    .. (case_binding and ("Press " .. case_binding .. " to toggle case.") or "")
+end
+
+local function open_terminal_search(view)
+  local state = view.search_state
+  local previous_text = state.text
+  local previous_case_sensitive = state.case_sensitive
+  search_view = view
+  core.status_view:show_tooltip(terminal_search_tooltip(view))
+  core.command_view:enter("Search Terminal", {
+    text = state.text,
+    select_text = true,
+    show_suggestions = false,
+    typeahead = false,
+    suggest = function(text)
+      view:set_search_text(text)
+      core.status_view:show_tooltip(terminal_search_tooltip(view))
+      return {}
+    end,
+    submit = function(text)
+      view:set_search_text(text)
+      search_view = view
+      core.status_view:show_tooltip(terminal_search_tooltip(view))
+    end,
+    cancel = function()
+      view.search_state.case_sensitive = previous_case_sensitive
+      view:set_search_text(previous_text)
+      search_view = view
+      core.status_view:show_tooltip(terminal_search_tooltip(view))
+    end
+  })
+end
+
+command.add(active_terminal_predicate, {
+  ["terminal:search"] = open_terminal_search
+})
+
+command.add(terminal_search_predicate, {
+  ["terminal:search-next"] = function(view) view:search_next(false) end,
+  ["terminal:search-previous"] = function(view) view:search_next(true) end,
+  ["terminal:search-toggle-case-sensitive"] = function(view)
+    view:toggle_search_case_sensitive()
+    core.status_view:show_tooltip(terminal_search_tooltip(view))
+  end
+})
+
+local function terminal_link_predicate()
+  local view = core.active_view
+  return view and view:is(TerminalView) and view.context_url ~= nil, view
+end
+
+command.add(terminal_link_predicate, {
+  ["terminal:open-link"] = function(view)
+    view:open_link(view.context_url)
+  end,
+  ["terminal:copy-link"] = function(view)
+    system.set_clipboard(view.context_url)
+  end
+})
+
+local contextmenu_available, terminal_contextmenu = pcall(require, "plugins.contextmenu")
+if contextmenu_available and terminal_contextmenu then
+  terminal_contextmenu:register(function(x, y)
+    local view = core.active_view
+    if not (view and view:is(TerminalView)) then return false end
+    local link = view:get_link_at(x, y)
+    view.context_url = link and link.url
+    return link ~= nil
+  end, {
+    { text = "Open Link", command = "terminal:open-link" },
+    { text = "Copy Link", command = "terminal:copy-link" }
+  })
+end
+
 command.add(active_terminal_predicate, {
   ["terminal:backspace"] = function(view) view:input(view.options.backspace) end,
   ["terminal:ctrl-backspace"] = function(view) view:input(view.options.backspace == "\b" and "\x7F" or "\b") end,
@@ -1303,6 +1683,14 @@ local keys = {
 local non_omitted_keys = {}
 for k,v in pairs(keys) do if config.plugins.terminal.omit_escapes == nil or not k:find(config.plugins.terminal.omit_escapes) then non_omitted_keys[k] = v end end
 keymap.add(non_omitted_keys)
+
+local terminal_search_keys = {
+  [PLATFORM == "Mac OS X" and "cmd+shift+f" or "ctrl+shift+f"] = "terminal:search",
+  ["f3"] = "terminal:search-next",
+  ["shift+f3"] = "terminal:search-previous",
+  ["ctrl+i"] = "terminal:search-toggle-case-sensitive"
+}
+keymap.add(terminal_search_keys)
 
 if config.plugins.terminal.inversion_key then
   local settings = {}
