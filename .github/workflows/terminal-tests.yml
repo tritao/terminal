@@ -21,13 +21,6 @@ jobs:
         run: |
           meson setup build -Dapi_include_dir=lib/pragtical/resources/include -Dbuildtype=debug
           meson test -C build --print-errorlogs
-          if ($LASTEXITCODE -ne 0) {
-            $diagnostic = & .\build\terminal-native-components-test.exe 2>&1
-            $test_exit = $LASTEXITCODE
-            $detail = ($diagnostic -join ' ') -replace '\r?\n', ' '
-            Write-Output "::error title=Windows terminal native test::exit=$test_exit $detail"
-            exit $test_exit
-          }
 
   native_windows:
     runs-on: windows-latest
@@ -44,6 +37,13 @@ jobs:
         run: |
           meson setup build -Dapi_include_dir=lib/pragtical/resources/include -Dbuildtype=debug
           meson test -C build --print-errorlogs
+          if ($LASTEXITCODE -ne 0) {
+            $diagnostic = & .\build\terminal-native-components-test.exe 2>&1
+            $test_exit = $LASTEXITCODE
+            $detail = ($diagnostic -join ' ') -replace '\r?\n', ' '
+            Write-Output "::error title=Windows terminal native test::exit=$test_exit $detail"
+            exit $test_exit
+          }
 
   native_macos:
     runs-on: macos-latest
