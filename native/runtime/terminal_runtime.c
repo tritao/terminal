@@ -53,29 +53,44 @@ struct terminal_runtime {
 
 static char error_step[64];
 #if _WIN32
-static long long last_error_code;
+static DWORD last_error_code;
 #endif
 
+static void copy_string(char* destination, size_t destination_size,
+    const char* source) {
+  if (!destination || !destination_size)
+    return;
+  if (!source) {
+    destination[0] = '\0';
+    return;
+  }
+  size_t length = strlen(source);
+  if (length >= destination_size)
+    length = destination_size - 1;
+  memcpy(destination, source, length);
+  destination[length] = '\0';
+}
+
 static int set_error_step(const char* step) {
-  strncpy(error_step, step, sizeof(error_step) - 1);
-  error_step[sizeof(error_step) - 1] = 0;
+  copy_string(error_step, sizeof(error_step), step);
   return 1;
 }
 
 const char* terminal_runtime_last_error(void) {
 #if _WIN32
   static char error_buffer[2048];
-  strcpy(error_buffer, error_step);
-  int length = (int)strlen(error_buffer);
+  copy_string(error_buffer, sizeof(error_buffer), error_step);
+  size_t length = strlen(error_buffer);
   error_buffer[length++] = ':';
   error_buffer[length++] = ' ';
+  DWORD message_size = (DWORD)(sizeof(error_buffer) - length - 1);
   FormatMessageA(
     FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
     NULL,
     last_error_code,
     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
     (LPSTR)&error_buffer[length],
-    sizeof(error_buffer) - (size_t)length - 1,
+    message_size,
     NULL
   );
   return error_buffer;
@@ -334,7 +349,7 @@ terminal_runtime_t* terminal_runtime_new(
   wchar_t* working_directory = NULL;
   STARTUPINFOEXW startup = {0};
   BOOL attribute_list_initialized = FALSE;
-  COORD size = { columns, rows };
+  COORD size = { (SHORT)columns, (SHORT)rows };
   if (!CreatePipe(&in_pipe_pseudo_console_side, &runtime->topty, &no_sec, 0)
       || !CreatePipe(&runtime->frompty, &out_pipe_pseudo_console_side, &no_sec, 0)) {
     set_error_step("create pipes");
@@ -526,7 +541,7 @@ void terminal_runtime_resize(terminal_runtime_t* runtime,
   if (!runtime->hpcon || columns <= 0 || rows <= 0
       || columns > SHRT_MAX || rows > SHRT_MAX)
     return;
-  COORD size = { columns, rows };
+  COORD size = { (SHORT)columns, (SHORT)rows };
   ResizePseudoConsole(runtime->hpcon, size);
 #else
   if (columns <= 0 || rows <= 0 || columns > USHRT_MAX || rows > USHRT_MAX)

@@ -211,7 +211,7 @@ static int f_terminal_getenv(lua_State* L) {
     }
     envp += wcslen(envp) + 1;
   }
-  FreeEnvironmentStrings(system_env);
+  FreeEnvironmentStringsW(system_env);
   return 1;
 }
 #endif
