@@ -1321,13 +1321,16 @@ local function adjust_font_size(view, delta)
   view:update()
 end
 
+local function is_terminal_view(view)
+  return view and view:extends(TerminalView)
+end
 
 command.add(function(amount)
   -- core.root_view.overlapping_view is not in any release yet (as of 2.1.3)
   local view = core.root_view.overlapping_view
                 or (core.root_view.overlapping_node and core.root_view.overlapping_node.active_view)
                 or core.active_view
-  return (view and view:is(TerminalView) and view.terminal), view, amount
+  return (is_terminal_view(view) and view.terminal), view, amount
 end, {
   ["terminal:scroll"] = function(view, amount)
     if not view.terminal then return end
@@ -1349,12 +1352,12 @@ end, {
 
 
 local active_terminal_predicate = function(...)
-  return (core.active_view:is(TerminalView) and core.active_view.terminal), core.active_view, ...
+  return (is_terminal_view(core.active_view) and core.active_view.terminal), core.active_view, ...
 end
 
 local function terminal_search_predicate()
   local view
-  if core.active_view and core.active_view:is(TerminalView) then
+  if is_terminal_view(core.active_view) then
     view = core.active_view
   elseif search_view and core.active_view == core.command_view then
     view = search_view
@@ -1420,7 +1423,7 @@ command.add(terminal_search_predicate, {
 
 local function terminal_link_predicate()
   local view = core.active_view
-  return view and view:is(TerminalView) and view.context_url ~= nil, view
+  return is_terminal_view(view) and view.context_url ~= nil, view
 end
 
 command.add(terminal_link_predicate, {
@@ -1436,7 +1439,7 @@ local contextmenu_available, terminal_contextmenu = pcall(require, "plugins.cont
 if contextmenu_available and terminal_contextmenu then
   terminal_contextmenu:register(function(x, y)
     local view = core.active_view
-    if not (view and view:is(TerminalView)) then return false end
+    if not is_terminal_view(view) then return false end
     local link = view:get_link_at(x, y)
     view.context_url = link and link.url
     return link ~= nil
@@ -1562,7 +1565,7 @@ if system.get_primary_selection then -- check for master vs. 2.1.7
 end
 
 command.add(function()
-  return core.active_view and core.active_view:is(TerminalView) and core.active_view.selection and #core.active_view.selection == 4
+  return is_terminal_view(core.active_view) and core.active_view.selection and #core.active_view.selection == 4
 end, {
   ["terminal:copy"] = function()
     local selection = core.active_view:sorted_selection()
@@ -1601,7 +1604,7 @@ command.add(nil, {
   ["terminal:execute"] = function(text)
     local open_drawer = function(text)
       if not core.terminal_view then command.perform("terminal:toggle-drawer") end
-      local target_view = core.active_view:is(TerminalView) and core.active_view or core.terminal_view
+      local target_view = is_terminal_view(core.active_view) and core.active_view or core.terminal_view
       target_view:input(text .. target_view.options.newline)
     end
     if not text then
@@ -1623,7 +1626,7 @@ command.add(function() return core.terminal_view and core.active_view ~= core.te
 
 core.status_view:add_item({
   predicate = function()
-    return core.active_view:is(TerminalView) and core.active_view.terminal
+    return is_terminal_view(core.active_view) and core.active_view.terminal
   end,
   name = "terminal:info",
   alignment = StatusView.Item.RIGHT,

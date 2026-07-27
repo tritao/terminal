@@ -1,6 +1,7 @@
 local core = require "core"
 local command = require "core.command"
 local common = require "core.common"
+local keymap = require "core.keymap"
 local test = require "core.test"
 
 local available, terminal = pcall(require, "plugins.terminal")
@@ -16,6 +17,34 @@ test.describe("terminal frontend", function()
     emulator:feed(text)
     return terminal.class { emulator = emulator }, emulator
   end
+
+  test.test("routes special keys to derived terminal views", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local DerivedTerminalView = terminal.class:extend()
+    local emulator = terminal.new_emulator { columns = 40, rows = 3, scrollback = 16 }
+    local received
+    local session = terminal.Session {
+      id = "derived-terminal-input",
+      emulator = emulator,
+      write = function(_, data)
+        received = data
+        return true
+      end,
+      resize = function() return true end,
+      poll_events = function() return {} end,
+      detach = function() return true end
+    }
+    local view = DerivedTerminalView { session = session, emulator = emulator }
+    local node = core.root_view:get_primary_node()
+    node:add_view(view)
+    core.set_active_view(view)
+
+    test.ok(keymap.on_key_pressed("backspace"))
+    test.equal(received, "\x7F")
+
+    view:close()
+    emulator:close()
+  end)
 
   test.test("searches visible output and scrollback with case options", function()
     test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
