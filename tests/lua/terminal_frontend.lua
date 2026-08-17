@@ -46,6 +46,31 @@ test.describe("terminal frontend", function()
     emulator:close()
   end)
 
+  test.test("falls back when a terminal palette entry is missing", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local fallback = { 12, 34, 56, 255 }
+    local view = terminal.class {
+      text = fallback,
+      colors = {}
+    }
+    view.options.colors[12] = nil
+
+    local color, attributes = view:convert_color(2 * 0x1000000 + 12 * 0x10000, "foreground")
+    test.equal(color, fallback)
+    test.equal(attributes, 2)
+
+    color = view:convert_color(2 * 0x1000000, "foreground")
+    test.equal(color, view.options.colors[0])
+
+    view.options.colors[12] = { 0, 0 }
+    color = view:convert_color(2 * 0x1000000 + 12 * 0x10000, "foreground")
+    test.equal(color, fallback)
+
+    color, attributes = view:convert_color(4 * 0x1000000, "foreground")
+    test.equal(color, fallback)
+    test.equal(attributes, 4)
+  end)
+
   test.test("searches visible output and scrollback with case options", function()
     test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
     local view, emulator = new_view("old TARGET\r\nnew target\r\nvisible target", { rows = 2 })

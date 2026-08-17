@@ -246,7 +246,17 @@ default_config.config_spec = set_config_default_values {
     icon = "P", type = "BUTTON", on_click = "core:open-user-module", path = ""
   }
 }
-config.plugins.terminal = common.merge(default_config, config.plugins.terminal)
+local user_terminal_config = config.plugins.terminal
+config.plugins.terminal = common.merge(default_config, user_terminal_config)
+-- Keep the built-in palette when only a few colors are customized.  The
+-- generic merge helper is intentionally shallow, but replacing the complete
+-- palette makes otherwise valid indexed colors resolve to nil.
+if type(user_terminal_config) == "table"
+  and type(user_terminal_config.colors) == "table" then
+  config.plugins.terminal.colors = common.merge(
+    default_config.colors, user_terminal_config.colors
+  )
+end
 
 core.add_thread(function()
   -- give time for ui settings (even on editor restart) and then apply font
@@ -270,6 +280,18 @@ end)
 local function contrastRatio(l1, l2)
   if l1 < l2 then return (l2 + 0.05) / (l1 + 0.05) end
   return (l1 + 0.05) / (l2 + 0.05)
+end
+
+local function is_valid_color(color)
+  if type(color) ~= "table" then return false end
+  for i = 1, 3 do
+    local channel = color[i]
+    if type(channel) ~= "number" or channel ~= channel
+      or channel < 0 or channel > 255 then
+      return false
+    end
+  end
+  return true
 end
 
 local function relativeLuminance(color)
@@ -383,7 +405,11 @@ function TerminalView:supports_text_input() return true end
 
 function TerminalView:new(options)
   TerminalView.super.new(self)
-  options = common.merge(common.merge({}, config.plugins.terminal), options)
+  local view_options = type(options) == "table" and options or {}
+  options = common.merge(common.merge({}, config.plugins.terminal), view_options)
+  if type(view_options.colors) == "table" then
+    options.colors = common.merge(config.plugins.terminal.colors, view_options.colors)
+  end
   self.size.y = options.drawer_height
   self.options = options
   self.session = options.session
@@ -855,18 +881,26 @@ function TerminalView:set_target_size(axis, value)
 end
 
 function TerminalView:convert_color(int, target, should_bright)
+  local fallback = target == "foreground" and self.options.text or self.options.background
+  if not is_valid_color(fallback) then
+    fallback = target == "foreground"
+      and { 255, 255, 255, 255 }
+      or { 0, 0, 0, 255 }
+  end
+
   local attributes = bit.rshift(int, 24)
   local type = bit.band(attributes, 0x7)
   if type == 0 then
-    if target == "foreground" then return self.options.text, attributes end
-    return self.options.background, attributes
+    local color = target == "foreground" and self.options.text or self.options.background
+    return is_valid_color(color) and color or fallback, attributes
   elseif type == 1 then
-    if target == "foreground" then return self.options.background, attributes end
-    return self.options.text, attributes
+    local color = target == "foreground" and self.options.background or self.options.text
+    return is_valid_color(color) and color or fallback, attributes
   elseif type == 2 then
     local index = bit.band(bit.rshift(int, 16), 0xFF)
     if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
-    return self.options.colors[tonumber(index)], attributes
+    local color = self.options.colors and self.options.colors[tonumber(index)]
+    return is_valid_color(color) and color or fallback, attributes
   elseif type == 3 then
     return {
       tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
@@ -875,7 +909,7 @@ function TerminalView:convert_color(int, target, should_bright)
       255
     }, attributes
   end
-  return nil
+  return fallback, attributes
 end
 
 function TerminalView:sorted_selection()
