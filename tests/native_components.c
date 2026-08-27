@@ -284,6 +284,20 @@ int main(void) {
     terminal_emulator_free(protocol);
     return 30;
   }
+
+  terminal_emulator_feed(protocol, "\x1B[>7u", 5);
+  reset_output();
+  if (!terminal_emulator_keyboard(protocol, "c", 4, UINT32_MAX)
+      || strcmp(output, "\x1B[99;5:1u") != 0) {
+    terminal_emulator_free(protocol);
+    return 31;
+  }
+  reset_output();
+  if (!terminal_emulator_keyboard(protocol, "up", 4, UINT32_MAX)
+      || strcmp(output, "\x1B[1;5A") != 0) {
+    terminal_emulator_free(protocol);
+    return 32;
+  }
   terminal_emulator_free(protocol);
 #endif
 
