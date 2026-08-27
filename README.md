@@ -122,6 +122,9 @@ PKG_CONFIG_PATH=/path/to/libtsm/lib/pkgconfig \
   -Dapi_include_dir=/path/to/pragtical/resources/include
 ```
 
+When libtsm is not available through `pkg-config`, Meson fetches the pinned
+fork revision through the bundled subproject wrap automatically.
+
 Pass `-Demulator_backend=custom` to select the original parser explicitly.
 
 The libtsm backend implements the same emulator ABI, including scrollback,
