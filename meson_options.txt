@@ -17,3 +17,9 @@ option(
   value: 'libtsm',
   description: 'Terminal parser backend'
 )
+option(
+  'codex_pty_test',
+  type: 'boolean',
+  value: false,
+  description: 'Build the opt-in Codex PTY integration test'
+)

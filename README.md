@@ -209,6 +209,25 @@ meson setup build -Dapi_include_dir=lib/pragtical/resources/include
 meson compile -C build
 ```
 
+### Testing the libtsm backend
+
+The normal native test is offline. The Codex terminal-probe test is opt-in and
+uses the terminal runtime's PTY/ConPTY boundary, so it does not require SDL or
+an X11 display:
+
+```
+PKG_CONFIG_PATH=/path/to/libtsm/lib/pkgconfig \
+  meson setup build-codex-pty \
+  -Demulator_backend=libtsm \
+  -Dcodex_pty_test=true \
+  -Dapi_include_dir=/path/to/pragtical/resources/include
+meson compile -C build-codex-pty
+CODEX_BIN=codex meson test -C build-codex-pty --print-errorlogs
+```
+
+The test stops after Codex's Kitty keyboard negotiation succeeds. Use Xvfb
+only for a separate Pragtical launch and rendering smoke test.
+
 ### Linux -> Windows
 
 ```

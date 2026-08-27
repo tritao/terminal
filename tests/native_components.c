@@ -231,21 +231,27 @@ int main(void) {
   if (!protocol)
     return 22;
   terminal_emulator_set_input_callback(protocol, collect_emulator_output, NULL);
+  reset_output();
+  terminal_emulator_feed(protocol, "\x1B[?u", 4);
+  if (strcmp(output, "\x1B[?0u") != 0) {
+    terminal_emulator_free(protocol);
+    return 22;
+  }
   terminal_emulator_feed(protocol, "\x1B[?2026h", 8);
   if (!terminal_emulator_synchronized_output(protocol)) {
     terminal_emulator_free(protocol);
-    return 23;
+    return 24;
   }
   reset_output();
   terminal_emulator_feed(protocol, "frame", 5);
   if (output_length != 0) {
     terminal_emulator_free(protocol);
-    return 24;
+    return 25;
   }
   terminal_emulator_feed(protocol, "\x1B[?2026l", 8);
   if (terminal_emulator_synchronized_output(protocol)) {
     terminal_emulator_free(protocol);
-    return 25;
+    return 26;
   }
 
   reset_output();
@@ -254,14 +260,14 @@ int main(void) {
   terminal_emulator_focus(protocol, 0);
   if (strcmp(output, "\x1B[I\x1B[O") != 0) {
     terminal_emulator_free(protocol);
-    return 26;
+    return 27;
   }
   terminal_emulator_feed(protocol, "\x1B[?1004l", 8);
   reset_output();
   terminal_emulator_focus(protocol, 1);
   if (output_length != 0) {
     terminal_emulator_free(protocol);
-    return 27;
+    return 28;
   }
 
   terminal_emulator_feed(protocol, "\x1B[?1049h\x1B[?1007h", 16);
@@ -269,14 +275,14 @@ int main(void) {
   if (!terminal_emulator_mouse(protocol, 0, 0, 64, 1, 0)
       || strcmp(output, "\x1B[A") != 0) {
     terminal_emulator_free(protocol);
-    return 28;
+    return 29;
   }
   terminal_emulator_feed(protocol, "\x1B[?1h", 5);
   reset_output();
   if (!terminal_emulator_mouse(protocol, 0, 0, 64, 1, 0)
       || strcmp(output, "\x1BOA") != 0) {
     terminal_emulator_free(protocol);
-    return 29;
+    return 30;
   }
   terminal_emulator_free(protocol);
 #endif

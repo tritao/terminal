@@ -100,6 +100,21 @@ native_components_test = executable(
 )
 test('terminal-native-components', native_components_test)
 
+if get_option('codex_pty_test')
+  if get_option('emulator_backend') != 'libtsm'
+    error('codex_pty_test requires the libtsm emulator backend')
+  endif
+  codex_pty_test = executable(
+    'terminal-codex-pty-test',
+    'tests/codex_pty.c',
+    include_directories: include_directories('native'),
+    link_with: [terminal_emulator_library, terminal_runtime_library],
+    dependencies: terminal_emulator_dependencies,
+    c_args: ['-DTERMINAL_EMULATOR_LIBTSM']
+  )
+  test('codex-pty', codex_pty_test, timeout: 240)
+endif
+
 install_headers(
   'native/terminal_core.h',
   subdir: 'pragtical-terminal'
