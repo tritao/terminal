@@ -14,6 +14,6 @@ option(
   'emulator_backend',
   type: 'combo',
   choices: ['custom', 'libtsm'],
-  value: 'custom',
+  value: 'libtsm',
   description: 'Terminal parser backend'
 )

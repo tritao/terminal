@@ -113,14 +113,16 @@ implementation files.
 
 ### libtsm backend
 
-The terminal keeps its self-contained parser as the default backend. The
-libtsm fork can be selected for integration testing with:
+The terminal uses the libtsm fork as its default parser backend. The original
+self-contained parser remains available for comparison with:
 
 ```
 PKG_CONFIG_PATH=/path/to/libtsm/lib/pkgconfig \
-  meson setup build-libtsm -Demulator_backend=libtsm \
+  meson setup build-libtsm \
   -Dapi_include_dir=/path/to/pragtical/resources/include
 ```
+
+Pass `-Demulator_backend=custom` to select the original parser explicitly.
 
 The libtsm backend implements the same emulator ABI, including scrollback,
 checkpoint replay, focus reporting, synchronized output observation, and
