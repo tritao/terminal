@@ -228,6 +228,17 @@ CODEX_BIN=codex meson test -C build-codex-pty --print-errorlogs
 The test stops after Codex's Kitty keyboard negotiation succeeds. Use Xvfb
 only for a separate Pragtical launch and rendering smoke test.
 
+To exercise the complete Pragtical keyboard path under Xvfb, use the
+standalone smoke test with the rebuilt application:
+
+```
+PRAGTICAL_BIN=/path/to/pragtical \
+  LIBTSM_LIBRARY_PATH=/path/to/libtsm/lib \
+  tests/xvfb_keyboard_smoke.sh
+```
+
+It records Ctrl-Up and Ctrl-C at the PTY child and checks their CSI-u bytes.
+
 ### Linux -> Windows
 
 ```
