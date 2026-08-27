@@ -460,6 +460,24 @@ static int f_terminal_mouse_encoding(lua_State* L) {
   return 1;
 }
 
+static int f_terminal_synchronized_output(lua_State* L) {
+  lua_pushboolean(L, terminal_core_synchronized_output(
+    lua_toterminal(L, 1)->core));
+  return 1;
+}
+
+static int f_terminal_mouse(lua_State* L) {
+  unsigned int cell_x = (unsigned int)check_int(L, 2);
+  unsigned int cell_y = (unsigned int)check_int(L, 3);
+  unsigned int button = (unsigned int)check_int(L, 4);
+  unsigned int event = (unsigned int)check_int(L, 5);
+  unsigned char modifiers = lua_gettop(L) >= 6
+    ? (unsigned char)check_int(L, 6) : 0;
+  lua_pushboolean(L, terminal_core_mouse(lua_toterminal(L, 1)->core,
+    cell_x, cell_y, button, event, modifiers));
+  return 1;
+}
+
 static const luaL_Reg terminal_api[] = {
   { "__gc",                f_terminal_gc                  },
   { "new",                 f_terminal_new                 },
@@ -481,6 +499,8 @@ static const luaL_Reg terminal_api[] = {
   { "focused",             f_terminal_focused               },
   { "mouse_tracking_mode", f_terminal_mouse_tracking_mode   },
   { "mouse_encoding",      f_terminal_mouse_encoding        },
+  { "synchronized_output", f_terminal_synchronized_output    },
+  { "mouse",              f_terminal_mouse                  },
   { "cursor_keys_mode",    f_terminal_cursor_keys_mode      },
   { "keypad_keys_mode",    f_terminal_keypad_keys_mode      },
   { "paste_mode",          f_terminal_paste_mode             },

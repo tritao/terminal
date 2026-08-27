@@ -35,16 +35,29 @@ if host_machine.system() != 'windows'
   terminal_native_dependencies += cc.find_library('util', required: true)
 endif
 
+terminal_emulator_source = 'native/emulator/terminal_emulator.c'
+terminal_emulator_dependencies = terminal_native_dependencies
+if get_option('emulator_backend') == 'libtsm'
+  libtsm_dep = dependency('libtsm', version: '>=4.7.1', required: true)
+  if not cc.has_function('tsm_vte_get_synchronized_output',
+      prefix: '#include <libtsm.h>', dependencies: libtsm_dep)
+    error('libtsm backend requires the tritao/libtsm next branch')
+  endif
+  terminal_emulator_source = 'native/emulator/terminal_emulator_libtsm.c'
+  terminal_emulator_dependencies += libtsm_dep
+endif
+
 terminal_emulator_library = static_library(
   'pragtical-terminal-emulator',
-  'native/emulator/terminal_emulator.c',
-  dependencies: terminal_native_dependencies,
+  terminal_emulator_source,
+  dependencies: terminal_emulator_dependencies,
   install: true
 )
 
 terminal_emulator_dep = declare_dependency(
   link_with: terminal_emulator_library,
-  include_directories: include_directories('native/emulator')
+  include_directories: include_directories('native/emulator'),
+  dependencies: terminal_emulator_dependencies
 )
 
 terminal_runtime_library = static_library(
@@ -72,12 +85,18 @@ terminal_core_dep = declare_dependency(
   include_directories: include_directories('native')
 )
 
+native_components_test_args = []
+if get_option('emulator_backend') == 'libtsm'
+  native_components_test_args += '-DTERMINAL_EMULATOR_LIBTSM'
+endif
+
 native_components_test = executable(
   'terminal-native-components-test',
   'tests/native_components.c',
   include_directories: include_directories('native'),
   link_with: [terminal_core_library, terminal_emulator_library, terminal_runtime_library],
-  dependencies: terminal_native_dependencies
+  dependencies: terminal_emulator_dependencies,
+  c_args: native_components_test_args
 )
 test('terminal-native-components', native_components_test)
 

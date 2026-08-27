@@ -72,6 +72,12 @@ end
 function Emulator:focused(focused) return self.native:focused(focused) end
 function Emulator:mouse_tracking_mode() return self.native:mouse_tracking_mode() end
 function Emulator:mouse_encoding() return self.native:mouse_encoding() end
+function Emulator:synchronized_output()
+  return self.native.synchronized_output and self.native:synchronized_output() or false
+end
+function Emulator:mouse(col, row, button, event, modifiers)
+  return self.native.mouse and self.native:mouse(col, row, button, event, modifiers) or false
+end
 function Emulator:cursor_keys_mode() return self.native:cursor_keys_mode() end
 function Emulator:keypad_keys_mode() return self.native:keypad_keys_mode() end
 function Emulator:paste_mode() return self.native:paste_mode() end

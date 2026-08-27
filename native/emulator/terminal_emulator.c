@@ -1925,3 +1925,20 @@ int terminal_emulator_for_each_line(terminal_emulator_t* emulator,
   }
   return emitted;
 }
+
+int terminal_emulator_synchronized_output(terminal_emulator_t* emulator) {
+  (void)emulator;
+  return 0;
+}
+
+int terminal_emulator_mouse(terminal_emulator_t* emulator,
+    unsigned int cell_x, unsigned int cell_y, unsigned int button,
+    unsigned int event, unsigned char modifiers) {
+  (void)emulator;
+  (void)cell_x;
+  (void)cell_y;
+  (void)button;
+  (void)event;
+  (void)modifiers;
+  return 0;
+}

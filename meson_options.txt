@@ -10,3 +10,10 @@ option(
   value: 'share/pragtical',
   description: 'Pragtical data installation directory'
 )
+option(
+  'emulator_backend',
+  type: 'combo',
+  choices: ['custom', 'libtsm'],
+  value: 'custom',
+  description: 'Terminal parser backend'
+)

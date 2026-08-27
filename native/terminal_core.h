@@ -108,6 +108,10 @@ int terminal_core_for_each_line(
   terminal_core_line_callback callback,
   void* user_data
 );
+int terminal_core_synchronized_output(terminal_core_t* terminal);
+int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,
+    unsigned int cell_y, unsigned int button, unsigned int event,
+    unsigned char modifiers);
 int terminal_core_exited(terminal_core_t* terminal, int* exit_code, int* signal);
 
 #ifdef __cplusplus

@@ -91,6 +91,15 @@ int terminal_emulator_for_each_line(
   terminal_emulator_line_callback callback,
   void* user_data
 );
+int terminal_emulator_synchronized_output(terminal_emulator_t* emulator);
+int terminal_emulator_mouse(
+  terminal_emulator_t* emulator,
+  unsigned int cell_x,
+  unsigned int cell_y,
+  unsigned int button,
+  unsigned int event,
+  unsigned char modifiers
+);
 
 #ifdef __cplusplus
 }

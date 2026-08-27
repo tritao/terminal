@@ -380,6 +380,11 @@ local function line_plain_text(line)
   return text
 end
 
+local function synchronized_output_enabled(emulator)
+  return emulator and emulator.synchronized_output
+    and emulator:synchronized_output() or false
+end
+
 local trailing_url_characters = {
   ["."] = true, [","] = true, [";"] = true, [":"] = true,
   ["!"] = true, ["?"] = true, [")"] = true, ["]"] = true,
@@ -657,9 +662,11 @@ function TerminalView:shift_selection_update()
     local capabilities = self.session.capabilities or {}
     for _, event in ipairs(events) do
       if event.type == "output" then
-        content_changed = true
         if not capabilities.events_applied then
           shifts = shifts + (self.emulator:feed(event.data) or 0)
+        end
+        if not synchronized_output_enabled(self.emulator) then
+          content_changed = true
         end
       elseif event.type == "checkpoint" then
         content_changed = true
@@ -698,7 +705,7 @@ function TerminalView:shift_selection_update()
       self.selection = nil
     end
   end
-  return shifts
+  return synchronized_output_enabled(self.emulator) and 0 or shifts
 end
 
 
@@ -715,8 +722,10 @@ function TerminalView:start_background()
       and weak_table.self.background_generation == generation do
       -- do not redraw when hidden
       if weak_table.self.size.y > 0 then
-        core.redraw = weak_table.self:shift_selection_update() or core.redraw
-        if core.active_view == self and not core.redraw then
+        local shifts = weak_table.self:shift_selection_update()
+        core.redraw = shifts or core.redraw
+        if core.active_view == self and not core.redraw
+            and not synchronized_output_enabled(weak_table.self.emulator) then
           core.redraw = true
           coroutine.yield(0.5)
         else
@@ -1103,12 +1112,19 @@ function TerminalView:get_active_mouse_button_code()
   return 3
 end
 
-function TerminalView:send_mouse_event(button_code, col, row, suffix, encoding)
+function TerminalView:send_mouse_event(button_code, col, row, suffix, encoding, event)
+  local native_event = event == "moved" and 4
+    or (event == "released" and 2 or 1)
+  if self.terminal.mouse and self.terminal:mouse(
+      col, row, button_code, native_event, 0) then
+    return true
+  end
   if encoding == "sgr" then
     self.terminal:input("\x1B[<" .. button_code .. ";" .. (col + 1) .. ";" .. (row + 1) .. suffix)
   else
     self.terminal:input("\x1B[M" .. string.char(32 + button_code) .. string.char(32 + col + 1) .. string.char(32 + row + 1))
   end
+  return false
 end
 
 function TerminalView:get_word_boundaries(col, row)
@@ -1151,7 +1167,7 @@ function TerminalView:on_mouse_pressed(button, x, y, clicks)
   local button_code = self:get_mouse_button_code(button)
   if not inverted and mouse_mode and button_code ~= nil then
     self.mouse_buttons[button] = true
-    self:send_mouse_event(button_code, col, row, "M", mouse_encoding)
+    self:send_mouse_event(button_code, col, row, "M", mouse_encoding, "pressed")
     return true
   end
   if button == "left" and self:open_link_at(x, y) then
@@ -1191,7 +1207,7 @@ function TerminalView:on_mouse_moved(x, y, dx, dy)
     local button_code = self:get_active_mouse_button_code()
     if mouse_mode == "any" or (mouse_mode == "button" and button_code ~= 3) then
       local col, row = self:convert_coordinates(x, y)
-      self:send_mouse_event(button_code + 32, col, row, "M", mouse_encoding)
+      self:send_mouse_event(button_code + 32, col, row, "M", mouse_encoding, "moved")
       return true
     end
   end
@@ -1247,7 +1263,7 @@ function TerminalView:on_mouse_released(button, x, y)
   local mouse_mode, mouse_encoding = self:get_mouse_tracking()
   local button_code = self:get_mouse_button_code(button)
   if button_code ~= nil and not inverted and mouse_mode and mouse_mode ~= "x10" then
-    self:send_mouse_event(3, col, row, "m", mouse_encoding)
+    self:send_mouse_event(3, col, row, "m", mouse_encoding, "released")
   end
   if button_code ~= nil then
     self.mouse_buttons[button] = nil
@@ -1372,8 +1388,14 @@ end, {
     local mouse_mode, mouse_encoding = view:get_mouse_tracking()
     if not inverted and mouse_mode and mouse_mode ~= "x10" then
       local col, row = view:convert_coordinates(view.mouse_x or view.position.x, view.mouse_y or view.position.y)
-      view:send_mouse_event(amount > 0 and 64 or 65, col, row, "M", mouse_encoding)
+      view:send_mouse_event(amount > 0 and 64 or 65, col, row, "M", mouse_encoding, "pressed")
     else
+      if not inverted and not mouse_mode and view.terminal.mouse then
+        local col, row = view:convert_coordinates(view.mouse_x or view.position.x, view.mouse_y or view.position.y)
+        if view.terminal:mouse(col, row, amount > 0 and 64 or 65, 1, 0) then
+          return
+        end
+      end
       view.accumulated_scroll = (view.accumulated_scroll or 0) + (amount or 1)
       if math.abs(view.accumulated_scroll) >= 1 then
         local delta = math.floor(view.accumulated_scroll + 0.5)

@@ -202,6 +202,19 @@ int terminal_core_for_each_line(terminal_core_t* terminal, int first_row,
     : 0;
 }
 
+int terminal_core_synchronized_output(terminal_core_t* terminal) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_synchronized_output(terminal->emulator) : 0;
+}
+
+int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,
+    unsigned int cell_y, unsigned int button, unsigned int event,
+    unsigned char modifiers) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_mouse(terminal->emulator, cell_x, cell_y, button,
+      event, modifiers) : 0;
+}
+
 int terminal_core_exited(terminal_core_t* terminal, int* exit_code, int* signal) {
   return terminal && terminal->runtime
     ? terminal_runtime_exited(terminal->runtime, exit_code, signal)

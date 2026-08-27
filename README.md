@@ -111,6 +111,22 @@ processes and raw byte polling. The Lua binding links against the small native
 core coordinator through `native/terminal_core.h`; it does not include native
 implementation files.
 
+### libtsm backend
+
+The terminal keeps its self-contained parser as the default backend. The
+libtsm fork can be selected for integration testing with:
+
+```
+PKG_CONFIG_PATH=/path/to/libtsm/lib/pkgconfig \
+  meson setup build-libtsm -Demulator_backend=libtsm \
+  -Dapi_include_dir=/path/to/pragtical/resources/include
+```
+
+The libtsm backend implements the same emulator ABI, including scrollback,
+checkpoint replay, focus reporting, synchronized output observation, and
+alternate-screen mouse handling. This keeps the parser replacement independent
+from the Lua frontend and leaves the existing backend available for comparison.
+
 ### Supported Shells
 
 The following shells are tested on each release to ensure that they actually

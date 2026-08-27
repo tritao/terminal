@@ -33,6 +33,13 @@ static void collect_output(char* data, int length, void* user_data) {
   output[output_length] = 0;
 }
 
+#ifdef TERMINAL_EMULATOR_LIBTSM
+static void collect_emulator_output(const char* data, int length,
+    void* user_data) {
+  collect_output((char*)data, length, user_data);
+}
+#endif
+
 static void inspect_line(int row, uint64_t style, const char* text,
     int length, int overflow, void* user_data) {
   (void)row;
@@ -217,6 +224,62 @@ int main(void) {
   }
   free(checkpoint);
   terminal_emulator_free(restored);
+
+#ifdef TERMINAL_EMULATOR_LIBTSM
+  terminal_emulator_t* protocol = terminal_emulator_new(20, 4, 8,
+    "xterm-256color");
+  if (!protocol)
+    return 22;
+  terminal_emulator_set_input_callback(protocol, collect_emulator_output, NULL);
+  terminal_emulator_feed(protocol, "\x1B[?2026h", 8);
+  if (!terminal_emulator_synchronized_output(protocol)) {
+    terminal_emulator_free(protocol);
+    return 23;
+  }
+  reset_output();
+  terminal_emulator_feed(protocol, "frame", 5);
+  if (output_length != 0) {
+    terminal_emulator_free(protocol);
+    return 24;
+  }
+  terminal_emulator_feed(protocol, "\x1B[?2026l", 8);
+  if (terminal_emulator_synchronized_output(protocol)) {
+    terminal_emulator_free(protocol);
+    return 25;
+  }
+
+  reset_output();
+  terminal_emulator_feed(protocol, "\x1B[?1004h", 8);
+  terminal_emulator_focus(protocol, 1);
+  terminal_emulator_focus(protocol, 0);
+  if (strcmp(output, "\x1B[I\x1B[O") != 0) {
+    terminal_emulator_free(protocol);
+    return 26;
+  }
+  terminal_emulator_feed(protocol, "\x1B[?1004l", 8);
+  reset_output();
+  terminal_emulator_focus(protocol, 1);
+  if (output_length != 0) {
+    terminal_emulator_free(protocol);
+    return 27;
+  }
+
+  terminal_emulator_feed(protocol, "\x1B[?1049h\x1B[?1007h", 16);
+  reset_output();
+  if (!terminal_emulator_mouse(protocol, 0, 0, 64, 1, 0)
+      || strcmp(output, "\x1B[A") != 0) {
+    terminal_emulator_free(protocol);
+    return 28;
+  }
+  terminal_emulator_feed(protocol, "\x1B[?1h", 5);
+  reset_output();
+  if (!terminal_emulator_mouse(protocol, 0, 0, 64, 1, 0)
+      || strcmp(output, "\x1BOA") != 0) {
+    terminal_emulator_free(protocol);
+    return 29;
+  }
+  terminal_emulator_free(protocol);
+#endif
 
   terminal_emulator_free(emulator);
 
