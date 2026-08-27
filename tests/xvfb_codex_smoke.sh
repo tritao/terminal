@@ -13,7 +13,7 @@ fi
 
 test_dir=$(mktemp -d /tmp/pragtical-terminal-codex-xvfb.XXXXXX)
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-libtsm_library_path=${LIBTSM_LIBRARY_PATH:-}
+LIBTSM_LIBRARY_PATH=${LIBTSM_LIBRARY_PATH:-}
 export LIBTSM_LIBRARY_PATH
 
 cleanup() {
