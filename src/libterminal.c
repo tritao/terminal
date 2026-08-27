@@ -478,6 +478,22 @@ static int f_terminal_mouse(lua_State* L) {
   return 1;
 }
 
+static int f_terminal_keyboard(lua_State* L) {
+  const char* key_name = luaL_checkstring(L, 2);
+  unsigned int modifiers = lua_gettop(L) >= 3
+    ? (unsigned int)check_int(L, 3) : 0;
+  uint32_t unicode = UINT32_MAX;
+  if (lua_gettop(L) >= 4 && !lua_isnil(L, 4)) {
+    lua_Integer value = luaL_checkinteger(L, 4);
+    if (value < 0 || value > 0x10ffff)
+      return luaL_error(L, "unicode argument is out of range");
+    unicode = (uint32_t)value;
+  }
+  lua_pushboolean(L, terminal_core_keyboard(lua_toterminal(L, 1)->core,
+    key_name, modifiers, unicode));
+  return 1;
+}
+
 static const luaL_Reg terminal_api[] = {
   { "__gc",                f_terminal_gc                  },
   { "new",                 f_terminal_new                 },
@@ -500,6 +516,7 @@ static const luaL_Reg terminal_api[] = {
   { "mouse_tracking_mode", f_terminal_mouse_tracking_mode   },
   { "mouse_encoding",      f_terminal_mouse_encoding        },
   { "synchronized_output", f_terminal_synchronized_output    },
+  { "keyboard",            f_terminal_keyboard               },
   { "mouse",              f_terminal_mouse                  },
   { "cursor_keys_mode",    f_terminal_cursor_keys_mode      },
   { "keypad_keys_mode",    f_terminal_keypad_keys_mode      },

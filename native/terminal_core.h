@@ -109,6 +109,8 @@ int terminal_core_for_each_line(
   void* user_data
 );
 int terminal_core_synchronized_output(terminal_core_t* terminal);
+int terminal_core_keyboard(terminal_core_t* terminal, const char* key_name,
+    unsigned int modifiers, uint32_t unicode);
 int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,
     unsigned int cell_y, unsigned int button, unsigned int event,
     unsigned char modifiers);

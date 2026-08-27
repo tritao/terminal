@@ -14,6 +14,42 @@
 #define TERMINAL_CHECKPOINT_HEADER_SIZE 32u
 #define TERMINAL_CHECKPOINT_MAX_HISTORY (256u * 1024u * 1024u)
 
+/* XKB keysyms are protocol values, not platform types. Keep this small
+ * translation table local so the Windows terminal build does not need the
+ * optional xkbcommon development headers. libtsm itself supplies the same
+ * values through its own optional header fallback. */
+enum {
+  TERMINAL_KEYSYM_NO_SYMBOL = 0x00000000u,
+  TERMINAL_KEYSYM_BACKSPACE = 0x0000ff08u,
+  TERMINAL_KEYSYM_TAB       = 0x0000ff09u,
+  TERMINAL_KEYSYM_RETURN    = 0x0000ff0du,
+  TERMINAL_KEYSYM_ESCAPE    = 0x0000ff1bu,
+  TERMINAL_KEYSYM_HOME      = 0x0000ff50u,
+  TERMINAL_KEYSYM_LEFT      = 0x0000ff51u,
+  TERMINAL_KEYSYM_UP        = 0x0000ff52u,
+  TERMINAL_KEYSYM_RIGHT     = 0x0000ff53u,
+  TERMINAL_KEYSYM_DOWN      = 0x0000ff54u,
+  TERMINAL_KEYSYM_PAGE_UP   = 0x0000ff55u,
+  TERMINAL_KEYSYM_PAGE_DOWN = 0x0000ff56u,
+  TERMINAL_KEYSYM_END       = 0x0000ff57u,
+  TERMINAL_KEYSYM_INSERT    = 0x0000ff63u,
+  TERMINAL_KEYSYM_DELETE    = 0x0000ffffu,
+  TERMINAL_KEYSYM_KP_TAB    = 0x0000ff89u,
+  TERMINAL_KEYSYM_KP_ENTER  = 0x0000ff8du,
+  TERMINAL_KEYSYM_F1         = 0x0000ffbeu,
+  TERMINAL_KEYSYM_F2         = 0x0000ffbfu,
+  TERMINAL_KEYSYM_F3         = 0x0000ffc0u,
+  TERMINAL_KEYSYM_F4         = 0x0000ffc1u,
+  TERMINAL_KEYSYM_F5         = 0x0000ffc2u,
+  TERMINAL_KEYSYM_F6         = 0x0000ffc3u,
+  TERMINAL_KEYSYM_F7         = 0x0000ffc4u,
+  TERMINAL_KEYSYM_F8         = 0x0000ffc5u,
+  TERMINAL_KEYSYM_F9         = 0x0000ffc6u,
+  TERMINAL_KEYSYM_F10        = 0x0000ffc7u,
+  TERMINAL_KEYSYM_F11        = 0x0000ffc8u,
+  TERMINAL_KEYSYM_F12        = 0x0000ffc9u
+};
+
 enum {
   TERMINAL_EMULATOR_CURSOR_SOLID = 0,
   TERMINAL_EMULATOR_CURSOR_HIDDEN = 1,
@@ -805,6 +841,80 @@ int terminal_emulator_synchronized_output(terminal_emulator_t* emulator) {
   terminal_t* terminal = (terminal_t*)emulator;
   return terminal && !terminal->closed
     && tsm_vte_get_synchronized_output(terminal->vte);
+}
+
+static uint32_t terminal_keyboard_keysym(const char* key_name) {
+  size_t length;
+  if (!key_name)
+    return TERMINAL_KEYSYM_NO_SYMBOL;
+  length = strlen(key_name);
+  if (length == 1) {
+    if (key_name[0] >= 'A' && key_name[0] <= 'Z')
+      return (uint32_t)(key_name[0] - 'A' + 'a');
+    return (uint32_t)(unsigned char)key_name[0];
+  }
+  if (strcmp(key_name, "keypad enter") == 0)
+    return TERMINAL_KEYSYM_KP_ENTER;
+  if (strcmp(key_name, "keypad tab") == 0)
+    return TERMINAL_KEYSYM_KP_TAB;
+  if (strcmp(key_name, "pageup") == 0)
+    return TERMINAL_KEYSYM_PAGE_UP;
+  if (strcmp(key_name, "pagedown") == 0)
+    return TERMINAL_KEYSYM_PAGE_DOWN;
+  if (strcmp(key_name, "backspace") == 0)
+    return TERMINAL_KEYSYM_BACKSPACE;
+  if (strcmp(key_name, "insert") == 0)
+    return TERMINAL_KEYSYM_INSERT;
+  if (strcmp(key_name, "delete") == 0)
+    return TERMINAL_KEYSYM_DELETE;
+  if (strcmp(key_name, "return") == 0 || strcmp(key_name, "enter") == 0)
+    return TERMINAL_KEYSYM_RETURN;
+  if (strcmp(key_name, "tab") == 0)
+    return TERMINAL_KEYSYM_TAB;
+  if (strcmp(key_name, "up") == 0)
+    return TERMINAL_KEYSYM_UP;
+  if (strcmp(key_name, "down") == 0)
+    return TERMINAL_KEYSYM_DOWN;
+  if (strcmp(key_name, "left") == 0)
+    return TERMINAL_KEYSYM_LEFT;
+  if (strcmp(key_name, "right") == 0)
+    return TERMINAL_KEYSYM_RIGHT;
+  if (strcmp(key_name, "home") == 0)
+    return TERMINAL_KEYSYM_HOME;
+  if (strcmp(key_name, "end") == 0)
+    return TERMINAL_KEYSYM_END;
+  if (strcmp(key_name, "escape") == 0)
+    return TERMINAL_KEYSYM_ESCAPE;
+  if (strcmp(key_name, "f1") == 0) return TERMINAL_KEYSYM_F1;
+  if (strcmp(key_name, "f2") == 0) return TERMINAL_KEYSYM_F2;
+  if (strcmp(key_name, "f3") == 0) return TERMINAL_KEYSYM_F3;
+  if (strcmp(key_name, "f4") == 0) return TERMINAL_KEYSYM_F4;
+  if (strcmp(key_name, "f5") == 0) return TERMINAL_KEYSYM_F5;
+  if (strcmp(key_name, "f6") == 0) return TERMINAL_KEYSYM_F6;
+  if (strcmp(key_name, "f7") == 0) return TERMINAL_KEYSYM_F7;
+  if (strcmp(key_name, "f8") == 0) return TERMINAL_KEYSYM_F8;
+  if (strcmp(key_name, "f9") == 0) return TERMINAL_KEYSYM_F9;
+  if (strcmp(key_name, "f10") == 0) return TERMINAL_KEYSYM_F10;
+  if (strcmp(key_name, "f11") == 0) return TERMINAL_KEYSYM_F11;
+  if (strcmp(key_name, "f12") == 0) return TERMINAL_KEYSYM_F12;
+  return TERMINAL_KEYSYM_NO_SYMBOL;
+}
+
+int terminal_emulator_keyboard(terminal_emulator_t* emulator,
+    const char* key_name, unsigned int modifiers, uint32_t unicode) {
+  terminal_t* terminal = (terminal_t*)emulator;
+  uint32_t keysym;
+  if (!terminal || terminal->closed)
+    return 0;
+  /* The Lua terminal keymap retains the existing configurable legacy
+   * sequences when Kitty keyboard mode is not active. */
+  if (!tsm_vte_get_keyboard_flags(terminal->vte))
+    return 0;
+  keysym = terminal_keyboard_keysym(key_name);
+  if (keysym == TERMINAL_KEYSYM_NO_SYMBOL)
+    return 0;
+  return tsm_vte_handle_keyboard(terminal->vte, keysym, keysym, modifiers,
+    unicode);
 }
 
 int terminal_emulator_mouse(terminal_emulator_t* emulator,

@@ -75,6 +75,9 @@ function Emulator:mouse_encoding() return self.native:mouse_encoding() end
 function Emulator:synchronized_output()
   return self.native.synchronized_output and self.native:synchronized_output() or false
 end
+function Emulator:keyboard(key_name, modifiers, unicode)
+  return self.native.keyboard and self.native:keyboard(key_name, modifiers or 0, unicode) or false
+end
 function Emulator:mouse(col, row, button, event, modifiers)
   return self.native.mouse and self.native:mouse(col, row, button, event, modifiers) or false
 end

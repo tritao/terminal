@@ -1931,6 +1931,15 @@ int terminal_emulator_synchronized_output(terminal_emulator_t* emulator) {
   return 0;
 }
 
+int terminal_emulator_keyboard(terminal_emulator_t* emulator,
+    const char* key_name, unsigned int modifiers, uint32_t unicode) {
+  (void)emulator;
+  (void)key_name;
+  (void)modifiers;
+  (void)unicode;
+  return 0;
+}
+
 int terminal_emulator_mouse(terminal_emulator_t* emulator,
     unsigned int cell_x, unsigned int cell_y, unsigned int button,
     unsigned int event, unsigned char modifiers) {

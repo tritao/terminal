@@ -207,6 +207,13 @@ int terminal_core_synchronized_output(terminal_core_t* terminal) {
     ? terminal_emulator_synchronized_output(terminal->emulator) : 0;
 }
 
+int terminal_core_keyboard(terminal_core_t* terminal, const char* key_name,
+    unsigned int modifiers, uint32_t unicode) {
+  return terminal && !terminal->closed
+    ? terminal_emulator_keyboard(terminal->emulator, key_name, modifiers,
+      unicode) : 0;
+}
+
 int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,
     unsigned int cell_y, unsigned int button, unsigned int event,
     unsigned char modifiers) {

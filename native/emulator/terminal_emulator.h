@@ -92,6 +92,8 @@ int terminal_emulator_for_each_line(
   void* user_data
 );
 int terminal_emulator_synchronized_output(terminal_emulator_t* emulator);
+int terminal_emulator_keyboard(terminal_emulator_t* emulator,
+  const char* key_name, unsigned int modifiers, uint32_t unicode);
 int terminal_emulator_mouse(
   terminal_emulator_t* emulator,
   unsigned int cell_x,
