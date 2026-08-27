@@ -38,13 +38,37 @@ endif
 terminal_emulator_source = 'native/emulator/terminal_emulator.c'
 terminal_emulator_dependencies = terminal_native_dependencies
 if get_option('emulator_backend') == 'libtsm'
-  libtsm_dep = dependency(
-    'libtsm',
-    version: '>=4.7.1',
-    fallback: ['libtsm', 'libtsm_dep'],
-    default_options: ['tests=false', 'gtktsm=false'],
-    required: true,
-  )
+  if get_option('wrap_mode') == 'forcefallback'
+    # The fallback is bundled into the native plugin so the plugin remains
+    # self-contained in portable and test runtimes. A system libtsm remains
+    # selectable through the normal dependency lookup.
+    libtsm_project = subproject(
+      'libtsm',
+      default_options: [
+        'default_library=static',
+        'tests=false',
+        'gtktsm=false',
+      ],
+    )
+    libtsm_dep = libtsm_project.get_variable('libtsm_dep')
+  else
+    libtsm_dep = dependency(
+      'libtsm',
+      version: '>=4.7.1',
+      required: get_option('wrap_mode') == 'nofallback',
+    )
+    if not libtsm_dep.found()
+      libtsm_project = subproject(
+        'libtsm',
+        default_options: [
+          'default_library=static',
+          'tests=false',
+          'gtktsm=false',
+        ],
+      )
+      libtsm_dep = libtsm_project.get_variable('libtsm_dep')
+    endif
+  endif
   terminal_emulator_source = 'native/emulator/terminal_emulator_libtsm.c'
   terminal_emulator_dependencies += libtsm_dep
 endif
