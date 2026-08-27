@@ -42,12 +42,9 @@ if get_option('emulator_backend') == 'libtsm'
     'libtsm',
     version: '>=4.7.1',
     fallback: ['libtsm', 'libtsm_dep'],
+    default_options: ['tests=false', 'gtktsm=false'],
     required: true,
   )
-  if not cc.has_function('tsm_vte_get_synchronized_output',
-      prefix: '#include <libtsm.h>', dependencies: libtsm_dep)
-    error('libtsm backend requires the tritao/libtsm next branch')
-  endif
   terminal_emulator_source = 'native/emulator/terminal_emulator_libtsm.c'
   terminal_emulator_dependencies += libtsm_dep
 endif
