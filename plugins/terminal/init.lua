@@ -476,6 +476,8 @@ function TerminalView:new(options)
   end
   self.size.y = options.drawer_height
   self.options = options
+  self.contrast_foreground = {}
+  self.contrast_foreground_size = 0
   self.session = options.session
   self.emulator = options.emulator
   self.terminal = self.emulator
@@ -1016,7 +1018,7 @@ function TerminalView:sorted_selection()
 end
 
 
-local contrast_foreground = {}
+local CONTRAST_FOREGROUND_CACHE_LIMIT = 4096
 
 local function apply_text_range(sections, range_start, range_end, background,
     foreground, subfunc, lengthfunc)
@@ -1088,7 +1090,9 @@ function TerminalView:draw()
       local foreground, background, text_style
       for i = 1, #line, 2 do
         local run = cell_line and cell_line[(i + 1) / 2]
-        line[i] = math.tointeger(line[i])
+        local style_value = line[i]
+        local style_key = tostring(style_value)
+        line[i] = math.tointeger(style_value)
         -- Native styling stores foreground in the low word and background in
         -- the high word (matching buffer_styling_t in both emulators).
         foreground, text_style = self:convert_color(
@@ -1096,11 +1100,27 @@ function TerminalView:draw()
           self.options.bold_text_in_bright_colors)
         background = self:convert_color(bit.rshift(line[i], 32), "background")
 
-        if config.plugins.terminal.minimum_contrast_ratio > 0 then
-          if not contrast_foreground[line[i]] then
-            contrast_foreground[line[i]] = ensureContrastRatio(background, foreground, config.plugins.terminal.minimum_contrast_ratio)
+        local minimum_contrast_ratio = config.plugins.terminal.minimum_contrast_ratio
+        if minimum_contrast_ratio > 0 then
+          local contrast_key = style_key .. ":" .. tostring(minimum_contrast_ratio)
+            .. ":" .. tostring(background[1]) .. "," .. tostring(background[2])
+            .. "," .. tostring(background[3]) .. ":" .. tostring(foreground[1])
+            .. "," .. tostring(foreground[2]) .. "," .. tostring(foreground[3])
+          local contrast_foreground = self.contrast_foreground
+          local cached_foreground = contrast_foreground[contrast_key]
+          if not cached_foreground then
+            if self.contrast_foreground_size >= CONTRAST_FOREGROUND_CACHE_LIMIT then
+              contrast_foreground = {}
+              self.contrast_foreground = contrast_foreground
+              self.contrast_foreground_size = 0
+            end
+            cached_foreground = ensureContrastRatio(
+              background, foreground, minimum_contrast_ratio
+            )
+            contrast_foreground[contrast_key] = cached_foreground
+            self.contrast_foreground_size = self.contrast_foreground_size + 1
           end
-          foreground = contrast_foreground[line[i]]
+          foreground = cached_foreground
         end
 
         local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font

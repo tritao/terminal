@@ -208,6 +208,31 @@ test.describe("terminal frontend", function()
       if run[2]:find("X", 1, true) then red_run = run break end
     end
     test.equal(red_run[3], 13)
+
+    emulator:close()
+  end)
+
+  test.test("draws packed styles without overflowing the contrast cache", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local view, emulator = new_view(
+      "\27[38;2;255;0;0mtrue-color output", { columns = 40, rows = 3 }
+    )
+    view.size = { x = 640, y = 120 }
+    local draw_rect = renderer.draw_rect
+    local draw_text = renderer.draw_text
+    local scrollbar_draw = view.v_scrollbar.draw
+    local horizontal_scrollbar_draw = view.h_scrollbar.draw
+    renderer.draw_rect = function() end
+    renderer.draw_text = function(_, text, x) return x + #text end
+    view.v_scrollbar.draw = function() end
+    view.h_scrollbar.draw = function() end
+    local ok, message = pcall(view.draw, view)
+    renderer.draw_rect = draw_rect
+    renderer.draw_text = draw_text
+    view.v_scrollbar.draw = scrollbar_draw
+    view.h_scrollbar.draw = horizontal_scrollbar_draw
+    test.ok(ok, message)
+    view:close()
     emulator:close()
   end)
 
