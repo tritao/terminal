@@ -514,20 +514,27 @@ int terminal_runtime_poll(terminal_runtime_t* runtime,
   if (!runtime->frompty)
     return 0;
   char output[TERMINAL_RUNTIME_CHUNK_SIZE];
-  DWORD available = 0;
-  if (!PeekNamedPipe(runtime->frompty, NULL, 0, NULL, &available, NULL))
-    return -1;
-  if (!available)
-    return 0;
-  DWORD read_size = available;
-  if (read_size > sizeof(output))
-    read_size = sizeof(output);
-  DWORD output_length = 0;
-  if (!ReadFile(runtime->frompty, output, read_size, &output_length, NULL))
-    return -1;
-  if (output_length > 0 && callback)
-    callback(output, (int)output_length, user_data);
-  return output_length > 0;
+  int available_output = 0;
+  int chunks_processed = 0;
+  while (chunks_processed++ < TERMINAL_RUNTIME_MAX_CHUNKS) {
+    DWORD available = 0;
+    if (!PeekNamedPipe(runtime->frompty, NULL, 0, NULL, &available, NULL))
+      return available_output ? available_output : -1;
+    if (!available)
+      return available_output;
+    DWORD read_size = available;
+    if (read_size > sizeof(output))
+      read_size = sizeof(output);
+    DWORD output_length = 0;
+    if (!ReadFile(runtime->frompty, output, read_size, &output_length, NULL))
+      return available_output ? available_output : -1;
+    if (!output_length)
+      return available_output;
+    if (callback)
+      callback(output, (int)output_length, user_data);
+    available_output = 1;
+  }
+  return available_output;
 #else
   char chunk[TERMINAL_RUNTIME_CHUNK_SIZE];
   int chunks_processed = 0;
