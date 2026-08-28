@@ -253,7 +253,10 @@ static int f_terminal_new(lua_State* L) {
   int environment_index = 0;
   while (lua_next(L, 7) != 0 && environment_index < 255) {
     environment[environment_index++] = duplicate_string(lua_tostring(L, -2));
-    environment[environment_index++] = duplicate_string(lua_tostring(L, -1));
+    environment[environment_index++] = duplicate_string(
+      lua_isboolean(L, -1) && !lua_toboolean(L, -1)
+        ? "__PRAGTICAL_TERMINAL_UNSET__"
+        : luaL_checkstring(L, -1));
     lua_pop(L, 1);
   }
 #endif

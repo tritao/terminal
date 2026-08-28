@@ -11,6 +11,36 @@ local function contains_terminal_text(emulator, text)
 end
 
 test.describe("local terminal backend", function()
+  local function collect_session_output(session)
+    local output = {}
+    local deadline = system.get_time() + 2
+    while system.get_time() < deadline and session:status() == "running" do
+      for _, event in ipairs(session:poll_events()) do
+        if event.type == "output" then output[#output + 1] = event.data end
+      end
+      system.sleep(0.01)
+    end
+    session:close()
+    return table.concat(output)
+  end
+
+  test.test("removes inherited NO_COLOR unless explicitly configured", function()
+    test.skip_if(PLATFORM == "Windows", "POSIX shell expansion is required")
+    local LocalSession = require "plugins.terminal.local_backend"
+    local session = LocalSession {
+      command = "/bin/sh",
+      args = { "-c", "printf '%s' \"${NO_COLOR-unset}\"" },
+    }
+    test.equal(collect_session_output(session), "unset")
+
+    session = LocalSession {
+      command = "/bin/sh",
+      args = { "-c", "printf '%s' \"${NO_COLOR-unset}\"" },
+      environment = { NO_COLOR = "explicit" },
+    }
+    test.equal(collect_session_output(session), "explicit")
+  end)
+
   test.test("launches, polls, and closes a POSIX PTY session", function()
     test.skip_if(PLATFORM == "Windows", "POSIX PTY launch is required")
     local LocalSession = require "plugins.terminal.local_backend"

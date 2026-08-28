@@ -450,8 +450,12 @@ error:
     if (term)
       setenv("TERM", term, 1);
     if (environment) {
-      for (int i = 0; i < 256 && environment[i] && environment[i + 1]; i += 2)
-        setenv(environment[i], environment[i + 1], 1);
+      for (int i = 0; i < 256 && environment[i] && environment[i + 1]; i += 2) {
+        if (!strcmp(environment[i + 1], "__PRAGTICAL_TERMINAL_UNSET__"))
+          unsetenv(environment[i]);
+        else
+          setenv(environment[i], environment[i + 1], 1);
+      }
     }
     const char* fallback_arguments[] = { command, NULL };
     execvp(command, (char* const*)(arguments ? arguments : fallback_arguments));

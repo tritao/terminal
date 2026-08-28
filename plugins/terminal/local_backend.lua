@@ -17,10 +17,12 @@ local function merge_environment(environment)
   if PLATFORM ~= "Windows" then
     local result = {}
     for key, value in pairs(environment) do result[key] = value end
+    if environment.NO_COLOR == nil then result.NO_COLOR = false end
     return result
   end
   local values = terminal_native.getenv and terminal_native.getenv() or {}
   for key, value in pairs(environment) do values[key] = value end
+  if environment.NO_COLOR == nil then values.NO_COLOR = nil end
   local result = {}
   for key, value in pairs(values) do result[#result + 1] = key .. "=" .. value end
   return table.concat(result, "\0") .. "\0\0"
