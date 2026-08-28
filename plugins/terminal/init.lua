@@ -4,6 +4,7 @@ local config = require "core.config"
 local command = require "core.command"
 local style = require "core.style"
 local common = require "core.common"
+local font = require "core.font"
 local View = require "core.view"
 local keymap = require "core.keymap"
 local StatusView = require "core.statusview"
@@ -15,45 +16,36 @@ local LocalSession = require "plugins.terminal.local_backend"
 local prev_scale = SCALE
 local default_shell =  os.getenv("SHELL") or (PLATFORM == "Windows" and os.getenv("COMSPEC")) or (PLATFORM == "Windows" and "c:\\windows\\system32\\cmd.exe" or "sh")
 
-local function first_existing_path(paths)
-  for _, path in ipairs(paths) do
-    if path and system.get_file_info(path) then return path end
-  end
+local function terminal_bold_font(value, size)
+  return font.build_stack(value, size, {
+    weight = "bold", antialiasing = "grayscale", smoothing = true
+  })
 end
 
-local function terminal_fallback_paths()
-  local symbol_paths = { DATADIR .. "/fonts/NotoSansSymbols2-Regular.ttf" }
-  local emoji_paths = {}
-  if PLATFORM == "Windows" then
-    local windows = os.getenv("WINDIR") or "C:\\Windows"
-    symbol_paths[#symbol_paths + 1] = windows .. "\\Fonts\\seguisym.ttf"
-    emoji_paths[#emoji_paths + 1] = windows .. "\\Fonts\\seguiemj.ttf"
-  elseif PLATFORM == "Mac OS X" then
-    symbol_paths[#symbol_paths + 1] = "/System/Library/Fonts/Apple Symbols.ttf"
-    emoji_paths[#emoji_paths + 1] = "/System/Library/Fonts/Apple Color Emoji.ttc"
-  else
-    symbol_paths[#symbol_paths + 1] = "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"
-    symbol_paths[#symbol_paths + 1] = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    emoji_paths[#emoji_paths + 1] = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
-    emoji_paths[#emoji_paths + 1] = "/usr/local/share/fonts/NotoColorEmoji.ttf"
+local function palette(values)
+  local result = {}
+  for index, value in ipairs(values) do
+    result[index - 1] = { common.color(value) }
   end
-  return first_existing_path(symbol_paths), first_existing_path(emoji_paths)
+  return result
 end
 
-local function terminal_font_group(primary, size, bold)
-  local fonts = { primary }
-  local symbols, emoji = terminal_fallback_paths()
-  local options = {
-    antialiasing = "grayscale", smoothing = true, bold = bold
-  }
-  for _, path in ipairs { symbols, emoji } do
-    if path then
-      local loaded, font = pcall(renderer.font.load, path, size, options)
-      if loaded then fonts[#fonts + 1] = font end
-    end
-  end
-  return #fonts == 1 and primary or renderer.font.group(fonts)
-end
+local color_profiles = {
+  theme = {
+    label = "Editor Theme",
+  },
+  tango = {
+    label = "Tango",
+    text = { common.color "#D3D7CF" },
+    background = { common.color "#2E3436" },
+    colors = palette {
+      "#2E3436", "#CC0000", "#4E9A06", "#C4A000",
+      "#3465A4", "#75507B", "#06989A", "#D3D7CF",
+      "#555753", "#EF2929", "#8AE234", "#FCE94F",
+      "#729FCF", "#AD7FA8", "#34E2E2", "#EEEEEC",
+    },
+  },
+}
 
 local default_config = {
   -- outputs a terminal.log file of all the output of your shell
@@ -91,6 +83,9 @@ local default_config = {
   drawer_height = 300,
   -- Use a different font from the code editor
   use_custom_font = false,
+  -- Named terminal colors. "theme" keeps editor foreground/background and
+  -- the built-in ANSI palette; other profiles provide fixed terminal colors.
+  color_scheme = "theme",
   -- the default console font. non-monospace is unsupported, fonts that
   -- work great and provide mostly everything you need to properly render
   -- things like btop:
@@ -98,9 +93,7 @@ local default_config = {
   -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
   -- You should use both, Julia as main and MesloLGS as fallback.
   font = style.code_font,
-  bold_font = style.code_font:copy(style.code_font:get_size(), {
-    smoothing = true, bold = true
-  }),
+  bold_font = terminal_bold_font(style.code_font, style.code_font:get_size()),
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- default background color if not explicitly set by the shell
@@ -174,6 +167,16 @@ local function set_config_default_values(c) for _, v in ipairs(c) do if v.path t
 default_config.config_spec = set_config_default_values {
   name = "Terminal",
   {
+    label = "Color Scheme",
+    description = "Choose terminal foreground, background, and ANSI colors.",
+    path = "color_scheme", type = "selection",
+    default = "theme",
+    values = {
+      { "Editor Theme", "theme" },
+      { "Tango", "tango" },
+    }
+  },
+  {
     label = "Use Custom Font",
     description = "Use the configured custom font for the terminal (requires restart).",
     path = "use_custom_font", type = "TOGGLE",
@@ -201,9 +204,13 @@ default_config.config_spec = set_config_default_values {
       if not config.plugins.terminal.use_custom_font then
         config.plugins.terminal.font = style.code_font
       end
-      config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-        config.plugins.terminal.font:get_size(), { smoothing = true, bold = true }
-      )
+      local size = config.plugins.terminal.font:get_size()
+      config.plugins.terminal.font = font.build_stack(
+        config.plugins.terminal.font, size, {
+          antialiasing = "grayscale", smoothing = true
+        })
+      config.plugins.terminal.bold_font = terminal_bold_font(
+        config.plugins.terminal.font, size)
     end
   },
   {
@@ -291,6 +298,19 @@ default_config.config_spec = set_config_default_values {
 }
 local user_terminal_config = config.plugins.terminal
 config.plugins.terminal = common.merge(default_config, user_terminal_config)
+local selected_profile = color_profiles[config.plugins.terminal.color_scheme]
+  or color_profiles.theme
+if not color_profiles[config.plugins.terminal.color_scheme] then
+  config.plugins.terminal.color_scheme = "theme"
+end
+if selected_profile.text then config.plugins.terminal.text = selected_profile.text end
+if selected_profile.background then
+  config.plugins.terminal.background = selected_profile.background
+end
+if selected_profile.colors then
+  config.plugins.terminal.colors = common.merge(
+    config.plugins.terminal.colors, selected_profile.colors)
+end
 -- Keep the built-in palette when only a few colors are customized.  The
 -- generic merge helper is intentionally shallow, but replacing the complete
 -- palette makes otherwise valid indexed colors resolve to nil.
@@ -306,18 +326,17 @@ core.add_thread(function()
   for _=1, 2 do coroutine.yield() end
   if not config.plugins.terminal.use_custom_font then
     local size = style.code_font:get_size()
-    config.plugins.terminal.font = terminal_font_group(
-      style.code_font, size, false)
-    config.plugins.terminal.bold_font = terminal_font_group(
-      style.code_font:copy(size, { smoothing = true, bold = true }),
-      size, true)
+    config.plugins.terminal.font = font.build_stack(style.code_font, size, {
+      antialiasing = "grayscale", smoothing = true
+    })
+    config.plugins.terminal.bold_font = terminal_bold_font(
+      config.plugins.terminal.font, size)
   elseif prev_scale ~= SCALE then
     config.plugins.terminal.font:set_size(
       (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
     )
-    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { smoothing = true, bold = true }
-    )
+    config.plugins.terminal.bold_font = terminal_bold_font(
+      config.plugins.terminal.font, config.plugins.terminal.font:get_size())
   end
 end)
 
@@ -1517,9 +1536,7 @@ end
 local function adjust_font_size(view, delta)
   local size = math.max(view.options.font:get_size() + delta, 1)
   view.options.font = view.options.font:copy(size)
-  view.options.bold_font = view.options.font:copy(size, {
-    smoothing = true, bold = true
-  })
+  view.options.bold_font = terminal_bold_font(view.options.font, size)
   view:update()
 end
 
@@ -2079,5 +2096,6 @@ return {
   new_emulator = new_emulator,
   register_profile = register_profile,
   normalize_launch_spec = normalize_launch_spec,
-  supported_capabilities = supported_capabilities
+  supported_capabilities = supported_capabilities,
+  color_profiles = color_profiles
 }
