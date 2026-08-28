@@ -40,11 +40,6 @@ struct terminal_runtime {
   HPCON hpcon;
   HANDLE topty;
   HANDLE frompty;
-  char nonblocking_buffer[TERMINAL_RUNTIME_CHUNK_SIZE];
-  int nonblocking_buffer_length;
-  HANDLE nonblocking_buffer_mutex;
-  HANDLE nonblocking_thread;
-  int closing;
 #else
   int master;
   pid_t pid;
@@ -276,40 +271,6 @@ error:
   return NULL;
 }
 
-static DWORD windows_nonblocking_thread_callback(void* data) {
-  terminal_runtime_t* runtime = (terminal_runtime_t*)data;
-  char chunk[TERMINAL_RUNTIME_CHUNK_SIZE];
-  while (!runtime->closing) {
-    WaitForSingleObject(runtime->nonblocking_buffer_mutex, INFINITE);
-    int available = (int)sizeof(runtime->nonblocking_buffer)
-      - runtime->nonblocking_buffer_length;
-    ReleaseMutex(runtime->nonblocking_buffer_mutex);
-    if (runtime->closing)
-      break;
-    if (available <= 0) {
-      Sleep(1);
-      continue;
-    }
-
-    DWORD bytes_read = 0;
-    DWORD read_size = (DWORD)available;
-    if (read_size > sizeof(chunk))
-      read_size = sizeof(chunk);
-    if (!ReadFile(runtime->frompty, chunk, read_size, &bytes_read, NULL))
-      break;
-    if (bytes_read > 0) {
-      WaitForSingleObject(runtime->nonblocking_buffer_mutex, INFINITE);
-      if (!runtime->closing) {
-        memcpy(&runtime->nonblocking_buffer[runtime->nonblocking_buffer_length],
-          chunk, bytes_read);
-        runtime->nonblocking_buffer_length += (int)bytes_read;
-      }
-      ReleaseMutex(runtime->nonblocking_buffer_mutex);
-    }
-    Sleep(1);
-  }
-  return 0;
-}
 #endif
 
 terminal_runtime_t* terminal_runtime_new(
@@ -369,13 +330,6 @@ terminal_runtime_t* terminal_runtime_new(
     last_error_code = HRESULT_CODE(result);
     goto error;
   }
-  runtime->nonblocking_buffer_mutex = CreateMutex(NULL, FALSE, NULL);
-  if (!runtime->nonblocking_buffer_mutex) {
-    set_error_step("create mutex");
-    last_error_code = GetLastError();
-    goto error;
-  }
-
   startup.StartupInfo.cb = sizeof(STARTUPINFOEXW);
   startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
   /*
@@ -447,13 +401,6 @@ terminal_runtime_t* terminal_runtime_new(
   if (!success) {
     set_error_step("create process");
     last_error_code = process_error;
-    goto error;
-  }
-  runtime->nonblocking_thread = CreateThread(NULL, 0,
-    windows_nonblocking_thread_callback, runtime, 0, NULL);
-  if (!runtime->nonblocking_thread) {
-    set_error_step("create thread");
-    last_error_code = GetLastError();
     goto error;
   }
   return runtime;
@@ -564,19 +511,22 @@ int terminal_runtime_poll(terminal_runtime_t* runtime,
   if (total_shifts)
     *total_shifts = 0;
 #if _WIN32
-  if (!runtime->nonblocking_buffer_mutex)
+  if (!runtime->frompty)
     return 0;
   char output[TERMINAL_RUNTIME_CHUNK_SIZE];
-  int output_length = 0;
-  WaitForSingleObject(runtime->nonblocking_buffer_mutex, INFINITE);
-  if (runtime->nonblocking_buffer_length > 0) {
-    output_length = runtime->nonblocking_buffer_length;
-    memcpy(output, runtime->nonblocking_buffer, (size_t)output_length);
-    runtime->nonblocking_buffer_length = 0;
-  }
-  ReleaseMutex(runtime->nonblocking_buffer_mutex);
+  DWORD available = 0;
+  if (!PeekNamedPipe(runtime->frompty, NULL, 0, NULL, &available, NULL))
+    return -1;
+  if (!available)
+    return 0;
+  DWORD read_size = available;
+  if (read_size > sizeof(output))
+    read_size = sizeof(output);
+  DWORD output_length = 0;
+  if (!ReadFile(runtime->frompty, output, read_size, &output_length, NULL))
+    return -1;
   if (output_length > 0 && callback)
-    callback(output, output_length, user_data);
+    callback(output, (int)output_length, user_data);
   return output_length > 0;
 #else
   char chunk[TERMINAL_RUNTIME_CHUNK_SIZE];
@@ -625,7 +575,6 @@ int terminal_runtime_close(terminal_runtime_t* runtime) {
     return 0;
   runtime->closed = 1;
 #if _WIN32
-  runtime->closing = 1;
   if (runtime->process_information.hProcess) {
     DWORD code = STILL_ACTIVE;
     if (GetExitCodeProcess(runtime->process_information.hProcess, &code)
@@ -633,12 +582,6 @@ int terminal_runtime_close(terminal_runtime_t* runtime) {
       TerminateProcess(runtime->process_information.hProcess, 1);
       WaitForSingleObject(runtime->process_information.hProcess, INFINITE);
     }
-  }
-  if (runtime->nonblocking_thread) {
-    CancelSynchronousIo(runtime->nonblocking_thread);
-    WaitForSingleObject(runtime->nonblocking_thread, INFINITE);
-    CloseHandle(runtime->nonblocking_thread);
-    runtime->nonblocking_thread = NULL;
   }
   if (runtime->frompty) {
     CloseHandle(runtime->frompty);
@@ -651,10 +594,6 @@ int terminal_runtime_close(terminal_runtime_t* runtime) {
   if (runtime->hpcon) {
     ClosePseudoConsole(runtime->hpcon);
     runtime->hpcon = NULL;
-  }
-  if (runtime->nonblocking_buffer_mutex) {
-    CloseHandle(runtime->nonblocking_buffer_mutex);
-    runtime->nonblocking_buffer_mutex = NULL;
   }
   if (runtime->process_information.hProcess) {
     CloseHandle(runtime->process_information.hProcess);
