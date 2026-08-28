@@ -98,7 +98,9 @@ local default_config = {
   -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
   -- You should use both, Julia as main and MesloLGS as fallback.
   font = style.code_font,
-  bold_font = style.code_font:copy(style.code_font:get_size(), { smoothing = true }),
+  bold_font = style.code_font:copy(style.code_font:get_size(), {
+    smoothing = true, bold = true
+  }),
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- default background color if not explicitly set by the shell
@@ -200,7 +202,7 @@ default_config.config_spec = set_config_default_values {
         config.plugins.terminal.font = style.code_font
       end
       config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-        config.plugins.terminal.font:get_size(), { smoothing = true }
+        config.plugins.terminal.font:get_size(), { smoothing = true, bold = true }
       )
     end
   },
@@ -314,7 +316,7 @@ core.add_thread(function()
       (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
     )
     config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { smoothing = true }
+      config.plugins.terminal.font:get_size(), { smoothing = true, bold = true }
     )
   end
 end)
@@ -982,7 +984,9 @@ function TerminalView:convert_color(int, target, should_bright)
       or { 0, 0, 0, 255 }
   end
 
-  local attributes = bit.rshift(int, 24)
+  -- Native color words are serialized in little-endian field order:
+  -- attributes, red/index, green, blue.
+  local attributes = bit.band(int, 0xFF)
   local type = bit.band(attributes, 0x7)
   if type == 0 then
     local color = target == "foreground" and self.options.text or self.options.background
@@ -991,15 +995,15 @@ function TerminalView:convert_color(int, target, should_bright)
     local color = target == "foreground" and self.options.background or self.options.text
     return is_valid_color(color) and color or fallback, attributes
   elseif type == 2 then
-    local index = bit.band(bit.rshift(int, 16), 0xFF)
+    local index = bit.band(bit.rshift(int, 8), 0xFF)
     if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
     local color = self.options.colors and self.options.colors[tonumber(index)]
     return is_valid_color(color) and color or fallback, attributes
   elseif type == 3 then
     return {
-      tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
       tonumber(bit.band(bit.rshift(int, 8), 0xFF)),
-      tonumber(bit.band(bit.rshift(int, 0), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 24), 0xFF)),
       255
     }, attributes
   end
@@ -1513,7 +1517,9 @@ end
 local function adjust_font_size(view, delta)
   local size = math.max(view.options.font:get_size() + delta, 1)
   view.options.font = view.options.font:copy(size)
-  view.options.bold_font = view.options.font:copy(size, { smoothing = true })
+  view.options.bold_font = view.options.font:copy(size, {
+    smoothing = true, bold = true
+  })
   view:update()
 end
 

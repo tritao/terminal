@@ -138,8 +138,6 @@ static void write_callback(struct tsm_vte* vte, const char* data, size_t length,
     return;
   if (terminal->input_callback) {
     terminal->input_callback(data, (int)length, terminal->input_callback_data);
-  } else {
-    terminal_emulator_feed_internal(terminal, data, length, 0);
   }
 }
 

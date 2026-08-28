@@ -239,6 +239,15 @@ int main(void) {
   terminal_emulator_free(restored);
 
 #ifdef TERMINAL_EMULATOR_LIBTSM
+  /* A headless emulator may intentionally omit a reply sink. Generated
+     replies must be dropped, never parsed recursively as process output. */
+  terminal_emulator_t* headless = terminal_emulator_new(20, 4, 8,
+    "xterm-256color");
+  if (!headless)
+    return 22;
+  terminal_emulator_feed(headless, "\x1B]10;?\x1B\\", 8);
+  terminal_emulator_free(headless);
+
   terminal_emulator_t* protocol = terminal_emulator_new(20, 4, 8,
     "xterm-256color");
   if (!protocol)
