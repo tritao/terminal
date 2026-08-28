@@ -7,8 +7,13 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#define NATIVE_PROGRESS(message) do { \
+  fprintf(stderr, "native-components: %s\n", message); \
+  fflush(stderr); \
+} while (0)
 #else
 #include <unistd.h>
+#define NATIVE_PROGRESS(message) do { } while (0)
 #endif
 
 static char output[4096];
@@ -126,6 +131,7 @@ static int fail_runtime_test(const char* name, int code) {
 }
 
 int main(void) {
+  NATIVE_PROGRESS("emulator tests");
   terminal_emulator_t* emulator = terminal_emulator_new(20, 4, 8, "xterm-256color");
   if (!emulator)
     return 1;
@@ -301,6 +307,7 @@ int main(void) {
   terminal_emulator_free(protocol);
 #endif
 
+  NATIVE_PROGRESS("invalid runtime options");
   terminal_emulator_free(emulator);
 
   if (terminal_runtime_new(0, 24, 100, "xterm-256color", "/bin/sh",
@@ -322,6 +329,7 @@ int main(void) {
   terminal_runtime_t* runtime = terminal_runtime_new(
     80, 24, 100, "xterm-256color", command, arguments, NULL, cwd
   );
+  NATIVE_PROGRESS("runtime one created");
   if (!runtime)
     return 12;
 
@@ -332,8 +340,10 @@ int main(void) {
     terminal_runtime_free(runtime);
     return fail_runtime_test("launch and output", 13);
   }
+  NATIVE_PROGRESS("runtime one closing");
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
+  NATIVE_PROGRESS("runtime one closed");
 
   reset_output();
 #ifdef _WIN32
@@ -365,6 +375,7 @@ int main(void) {
 #endif
   runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
     launch_command, launch_arguments, launch_environment, launch_cwd);
+  NATIVE_PROGRESS("runtime two created");
   if (!runtime)
     return fail_runtime_test("environment and cwd launch", 15);
   if (!wait_for_runtime(runtime, "env:present", 7, 2000,
@@ -382,8 +393,10 @@ int main(void) {
     terminal_runtime_free(runtime);
     return fail_runtime_test("working directory output", 17);
   }
+  NATIVE_PROGRESS("runtime two closing");
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
+  NATIVE_PROGRESS("runtime two closed");
 
   reset_output();
 #ifdef _WIN32
@@ -402,6 +415,7 @@ int main(void) {
 #endif
   runtime = terminal_runtime_new(80, 24, 100, "xterm-256color",
     input_command, input_arguments, NULL, NULL);
+  NATIVE_PROGRESS("runtime three created");
   if (!runtime)
     return fail_runtime_test("input and resize launch", 18);
   terminal_runtime_resize(runtime, 101, 33);
@@ -410,6 +424,7 @@ int main(void) {
     terminal_runtime_free(runtime);
     return fail_runtime_test("input readiness", 19);
   }
+  NATIVE_PROGRESS("runtime three ready");
 #ifdef _WIN32
   const char input[] = "echo input:runtime input\r\nmode con\r\nexit\r\n";
 #else
@@ -423,6 +438,7 @@ int main(void) {
     terminal_runtime_free(runtime);
     return fail_runtime_test("input delivery", 20);
   }
+  NATIVE_PROGRESS("runtime three input complete");
 #ifdef _WIN32
   if ((!strstr(output, "Lines:")
       && !wait_for_output(runtime, "Lines:", 1000))
@@ -437,6 +453,7 @@ int main(void) {
   }
   terminal_runtime_close(runtime);
   terminal_runtime_free(runtime);
+  NATIVE_PROGRESS("runtime three closed");
 
 #ifndef _WIN32
   reset_output();
