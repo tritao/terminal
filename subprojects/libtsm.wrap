@@ -1,4 +1,4 @@
 [wrap-git]
 url = https://github.com/tritao/libtsm.git
-revision = 72af2d35512fe70b2a48772977c63553ff98f1bc
+revision = fd8bd9db3b88d60f36559b9429c18670cbf6d85c
 depth = 1
