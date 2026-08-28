@@ -45,9 +45,11 @@ static void collect_emulator_output(const char* data, int length,
 }
 #endif
 
-static void inspect_line(int row, uint64_t style, const char* text,
-    int length, int overflow, void* user_data) {
+static void inspect_line(int row, int column, int cells, uint64_t style,
+    const char* text, int length, int overflow, void* user_data) {
   (void)row;
+  (void)column;
+  (void)cells;
   (void)style;
   (void)overflow;
   (void)user_data;
@@ -57,8 +59,10 @@ static void inspect_line(int row, uint64_t style, const char* text,
   }
 }
 
-static void inspect_scrollback(int row, uint64_t style, const char* text,
-    int length, int overflow, void* user_data) {
+static void inspect_scrollback(int row, int column, int cells, uint64_t style,
+    const char* text, int length, int overflow, void* user_data) {
+  (void)column;
+  (void)cells;
   (void)style;
   (void)text;
   (void)length;
@@ -68,9 +72,12 @@ static void inspect_scrollback(int row, uint64_t style, const char* text,
     saw_scrollback = 1;
 }
 
-static void inspect_colored_text(int row, uint64_t style, const char* text,
-    int length, int overflow, void* user_data) {
+static void inspect_colored_text(int row, int column, int cells,
+    uint64_t style, const char* text, int length, int overflow,
+    void* user_data) {
   (void)row;
+  (void)column;
+  (void)cells;
   (void)overflow;
   (void)user_data;
   if (memchr(text, 'X', (size_t)length))

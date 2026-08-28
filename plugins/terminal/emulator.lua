@@ -6,6 +6,7 @@ local terminal_native = require "plugins.terminal.libterminal"
 
 local Emulator = {}
 Emulator.__index = Emulator
+local synchronized_output_end = "\27[?2026l"
 
 local function environment_for_native(environment)
   environment = environment or {}
@@ -45,6 +46,37 @@ function Emulator:feed(data)
   if type(data) ~= "string" then error("terminal emulator data must be a string") end
   return self.native:input(data) or 0
 end
+function Emulator:feed_frames(data, on_frame)
+  if type(data) ~= "string" then error("terminal emulator data must be a string") end
+  local buffered = (self.synchronized_output_tail or "") .. data
+  self.synchronized_output_tail = nil
+  local shifts, offset = 0, 1
+  while true do
+    local _, end_at = buffered:find(synchronized_output_end, offset, true)
+    if not end_at then break end
+    shifts = shifts + (self.native:input(buffered:sub(offset, end_at)) or 0)
+    if on_frame then on_frame(self) end
+    offset = end_at + 1
+  end
+
+  local remaining = buffered:sub(offset)
+  local pending = 0
+  local maximum = math.min(#remaining, #synchronized_output_end - 1)
+  for length = maximum, 1, -1 do
+    if remaining:sub(-length) == synchronized_output_end:sub(1, length) then
+      pending = length
+      break
+    end
+  end
+  if pending > 0 then
+    self.synchronized_output_tail = remaining:sub(-pending)
+    remaining = remaining:sub(1, -pending - 1)
+  end
+  if #remaining > 0 then
+    shifts = shifts + (self.native:input(remaining) or 0)
+  end
+  return shifts
+end
 function Emulator:checkpoint() return self.native:checkpoint() end
 function Emulator:restore_checkpoint(data)
   if type(data) ~= "string" then error("terminal checkpoint data must be a string") end
@@ -58,6 +90,10 @@ function Emulator:update(callback)
   return shifts
 end
 function Emulator:lines(...) return self.native:lines(...) end
+function Emulator:cell_lines(...)
+  if self.native.cell_lines then return self.native:cell_lines(...) end
+  return nil
+end
 function Emulator:cursor(...) return self.native:cursor(...) end
 function Emulator:scrollback(...) return self.native:scrollback(...) end
 function Emulator:clear() return self.native:clear() end
@@ -76,7 +112,8 @@ function Emulator:synchronized_output()
   return self.native.synchronized_output and self.native:synchronized_output() or false
 end
 function Emulator:keyboard(key_name, modifiers, unicode)
-  return self.native.keyboard and self.native:keyboard(key_name, modifiers or 0, unicode) or false
+  if not self.native.keyboard then return false end
+  return self.native:keyboard(key_name, modifiers or 0, unicode)
 end
 function Emulator:mouse(col, row, button, event, modifiers)
   return self.native.mouse and self.native:mouse(col, row, button, event, modifiers) or false

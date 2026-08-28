@@ -61,6 +61,7 @@ typedef struct terminal_lines_context {
   int overflow;
   int last_text_index;
   int has_line;
+  int cell_geometry;
 } terminal_lines_context_t;
 
 static void finish_line(terminal_lines_context_t* context) {
@@ -68,7 +69,8 @@ static void finish_line(terminal_lines_context_t* context) {
   if (!context->has_line)
     return;
 
-  if (!context->overflow && context->last_text_index > 0) {
+  if (!context->cell_geometry && !context->overflow
+      && context->last_text_index > 0) {
     lua_rawgeti(L, context->line_index, context->last_text_index);
     lua_pushliteral(L, "\n");
     lua_concat(L, 2);
@@ -78,8 +80,10 @@ static void finish_line(terminal_lines_context_t* context) {
   context->has_line = 0;
 }
 
-static void push_line_segment(int row, uint64_t style, const char* text,
-    int length, int overflow, void* data) {
+static void push_line_segment(int row, int column, int cells, uint64_t style,
+    const char* text, int length, int overflow, void* data) {
+  (void)column;
+  (void)cells;
   terminal_lines_context_t* context = (terminal_lines_context_t*)data;
   lua_State* L = context->L;
   if (!context->has_line || row != context->current_row) {
@@ -97,6 +101,36 @@ static void push_line_segment(int row, uint64_t style, const char* text,
   lua_pushlstring(L, text, (size_t)length);
   lua_rawseti(L, context->line_index, ++context->group);
   context->last_text_index = context->group;
+  context->overflow = overflow;
+}
+
+static void push_cell_segment(int row, int column, int cells, uint64_t style,
+    const char* text, int length, int overflow, void* data) {
+  terminal_lines_context_t* context = (terminal_lines_context_t*)data;
+  lua_State* L = context->L;
+  if (!context->has_line || row != context->current_row) {
+    finish_line(context);
+    lua_newtable(L);
+    context->line_index = lua_gettop(L);
+    context->current_row = row;
+    context->group = 0;
+    context->overflow = overflow;
+    context->last_text_index = 0;
+    context->has_line = 1;
+  }
+
+  lua_newtable(L);
+  char value[24];
+  snprintf(value, sizeof(value), "%" PRIu64, style);
+  lua_pushstring(L, value);
+  lua_rawseti(L, -2, 1);
+  lua_pushlstring(L, text, (size_t)length);
+  lua_rawseti(L, -2, 2);
+  lua_pushinteger(L, column);
+  lua_rawseti(L, -2, 3);
+  lua_pushinteger(L, cells);
+  lua_rawseti(L, -2, 4);
+  lua_rawseti(L, context->line_index, ++context->group);
   context->overflow = overflow;
 }
 
@@ -126,6 +160,37 @@ static int f_terminal_lines(lua_State* L) {
   };
   terminal_core_for_each_line(terminal->core, start, end - 1,
     push_line_segment, &context);
+  finish_line(&context);
+  return 1;
+}
+
+static int f_terminal_cell_lines(lua_State* L) {
+  terminal_binding_t* terminal = lua_toterminal(L, 1);
+  int rows;
+  terminal_core_dimensions(terminal->core, NULL, &rows);
+  int current, total;
+  terminal_core_scrollback(terminal->core, -1, &current, &total);
+  (void)total;
+
+  int start = -current;
+  if (lua_gettop(L) >= 2)
+    start = check_int(L, 2);
+  int end = start + rows;
+  if (lua_gettop(L) >= 3) {
+    int requested_end = check_int(L, 3);
+    if (requested_end == INT_MAX)
+      return luaL_error(L, "terminal line range is too large");
+    end = requested_end + 1;
+  }
+
+  lua_newtable(L);
+  terminal_lines_context_t context = {
+    .L = L,
+    .result_index = lua_gettop(L),
+    .cell_geometry = 1,
+  };
+  terminal_core_for_each_line(terminal->core, start, end - 1,
+    push_cell_segment, &context);
   finish_line(&context);
   return 1;
 }
@@ -489,9 +554,15 @@ static int f_terminal_keyboard(lua_State* L) {
       return luaL_error(L, "unicode argument is out of range");
     unicode = (uint32_t)value;
   }
-  lua_pushboolean(L, terminal_core_keyboard(lua_toterminal(L, 1)->core,
-    key_name, modifiers, unicode));
-  return 1;
+  terminal_core_t* core = lua_toterminal(L, 1)->core;
+  lua_pushboolean(L, terminal_core_keyboard(core, key_name, modifiers, unicode));
+  int length = 0;
+  const char* encoded = terminal_core_encoded_input(core, &length);
+  if (encoded && length > 0)
+    lua_pushlstring(L, encoded, (size_t)length);
+  else
+    lua_pushnil(L);
+  return 2;
 }
 
 static const luaL_Reg terminal_api[] = {
@@ -505,6 +576,7 @@ static const luaL_Reg terminal_api[] = {
   { "checkpoint",           f_terminal_checkpoint           },
   { "restore_checkpoint",   f_terminal_restore_checkpoint   },
   { "lines",               f_terminal_lines                },
+  { "cell_lines",          f_terminal_cell_lines           },
   { "size",                f_terminal_size                 },
   { "update",              f_terminal_update               },
   { "exited",              f_terminal_exited               },

@@ -41,6 +41,8 @@ typedef enum terminal_core_paste_mode {
 typedef void (*terminal_core_output_callback)(char* data, int length, void* user_data);
 typedef void (*terminal_core_line_callback)(
   int row,
+  int column,
+  int cells,
   uint64_t style,
   const char* text,
   int length,
@@ -111,6 +113,7 @@ int terminal_core_for_each_line(
 int terminal_core_synchronized_output(terminal_core_t* terminal);
 int terminal_core_keyboard(terminal_core_t* terminal, const char* key_name,
     unsigned int modifiers, uint32_t unicode);
+const char* terminal_core_encoded_input(terminal_core_t* terminal, int* length);
 int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,
     unsigned int cell_y, unsigned int button, unsigned int event,
     unsigned char modifiers);

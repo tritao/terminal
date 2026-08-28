@@ -14,6 +14,47 @@ local LocalSession = require "plugins.terminal.local_backend"
 
 local prev_scale = SCALE
 local default_shell =  os.getenv("SHELL") or (PLATFORM == "Windows" and os.getenv("COMSPEC")) or (PLATFORM == "Windows" and "c:\\windows\\system32\\cmd.exe" or "sh")
+
+local function first_existing_path(paths)
+  for _, path in ipairs(paths) do
+    if path and system.get_file_info(path) then return path end
+  end
+end
+
+local function terminal_fallback_paths()
+  local symbol_paths = { DATADIR .. "/fonts/NotoSansSymbols2-Regular.ttf" }
+  local emoji_paths = {}
+  if PLATFORM == "Windows" then
+    local windows = os.getenv("WINDIR") or "C:\\Windows"
+    symbol_paths[#symbol_paths + 1] = windows .. "\\Fonts\\seguisym.ttf"
+    emoji_paths[#emoji_paths + 1] = windows .. "\\Fonts\\seguiemj.ttf"
+  elseif PLATFORM == "Mac OS X" then
+    symbol_paths[#symbol_paths + 1] = "/System/Library/Fonts/Apple Symbols.ttf"
+    emoji_paths[#emoji_paths + 1] = "/System/Library/Fonts/Apple Color Emoji.ttc"
+  else
+    symbol_paths[#symbol_paths + 1] = "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"
+    symbol_paths[#symbol_paths + 1] = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    emoji_paths[#emoji_paths + 1] = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+    emoji_paths[#emoji_paths + 1] = "/usr/local/share/fonts/NotoColorEmoji.ttf"
+  end
+  return first_existing_path(symbol_paths), first_existing_path(emoji_paths)
+end
+
+local function terminal_font_group(primary, size, bold)
+  local fonts = { primary }
+  local symbols, emoji = terminal_fallback_paths()
+  local options = {
+    antialiasing = "grayscale", smoothing = true, bold = bold
+  }
+  for _, path in ipairs { symbols, emoji } do
+    if path then
+      local loaded, font = pcall(renderer.font.load, path, size, options)
+      if loaded then fonts[#fonts + 1] = font end
+    end
+  end
+  return #fonts == 1 and primary or renderer.font.group(fonts)
+end
+
 local default_config = {
   -- outputs a terminal.log file of all the output of your shell
   debug = false,
@@ -262,10 +303,12 @@ core.add_thread(function()
   -- give time for ui settings (even on editor restart) and then apply font
   for _=1, 2 do coroutine.yield() end
   if not config.plugins.terminal.use_custom_font then
-    config.plugins.terminal.font = style.code_font
-    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { smoothing = true }
-    )
+    local size = style.code_font:get_size()
+    config.plugins.terminal.font = terminal_font_group(
+      style.code_font, size, false)
+    config.plugins.terminal.bold_font = terminal_font_group(
+      style.code_font:copy(size, { smoothing = true, bold = true }),
+      size, true)
   elseif prev_scale ~= SCALE then
     config.plugins.terminal.font:set_size(
       (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
@@ -385,6 +428,18 @@ local function synchronized_output_enabled(emulator)
     and emulator:synchronized_output() or false
 end
 
+local function capture_render_snapshot(view)
+  local cursor_x, cursor_y, cursor_mode = view.emulator:cursor()
+  view.render_snapshot = {
+    lines = view.emulator:lines(),
+    cell_lines = view.emulator.cell_lines and view.emulator:cell_lines() or nil,
+    cursor_x = cursor_x,
+    cursor_y = cursor_y,
+    cursor_mode = cursor_mode,
+    scrollback = view.emulator:scrollback(),
+  }
+end
+
 local trailing_url_characters = {
   ["."] = true, [","] = true, [";"] = true, [":"] = true,
   ["!"] = true, ["?"] = true, [")"] = true, ["]"] = true,
@@ -400,6 +455,10 @@ end
 
 local TerminalView = View:extend()
 local search_view
+
+function TerminalView:capture_render_snapshot()
+  capture_render_snapshot(self)
+end
 
 function TerminalView:get_name()
   local name = self.terminal and self.terminal:name()
@@ -663,7 +722,9 @@ function TerminalView:shift_selection_update()
     for _, event in ipairs(events) do
       if event.type == "output" then
         if not capabilities.events_applied then
-          shifts = shifts + (self.emulator:feed(event.data) or 0)
+          shifts = shifts + self.emulator:feed_frames(event.data, function()
+            self:capture_render_snapshot()
+          end)
         end
         if not synchronized_output_enabled(self.emulator) then
           content_changed = true
@@ -692,6 +753,7 @@ function TerminalView:shift_selection_update()
     shifts = shifts + (self.session.last_shifts or 0)
   end
   if content_changed then
+    self:capture_render_snapshot()
     self:invalidate_output_cache()
     if self.search_state.text ~= "" then
       self:refresh_search(true)
@@ -771,7 +833,11 @@ function TerminalView:create_session()
 end
 
 function TerminalView:spawn()
+  local existing_session = self.session ~= nil
   if not self.session then self.session = self:create_session() end
+  if existing_session then
+    self.session:resize(self.columns, self.lines)
+  end
   self.emulator = self.emulator or self.session.emulator or Emulator {
     columns = self.columns, rows = self.lines,
     scrollback_limit = self.options.scrollback_limit,
@@ -792,6 +858,7 @@ function TerminalView:detach_session()
   self.session_attached = false
   self.emulator = nil
   self.terminal = nil
+  self.render_snapshot = nil
   self:invalidate_output_cache()
   self.routine = nil
   return session
@@ -822,11 +889,29 @@ function TerminalView:update()
     self.lines = math.max(math.floor((self.size.y - self.options.padding.y*2) / self.options.font:get_height()), 1)
     if self.lines > 0 and self.columns > 0 then
       if not self.terminal then
-        self:spawn()
+        local geometry = tostring(self.columns) .. "x" .. tostring(self.lines)
+        local now = system.get_time()
+        if self.pending_spawn_geometry == geometry
+            and now - self.pending_spawn_time >= 0.05 then
+          self.pending_spawn_geometry = nil
+          self.pending_spawn_time = nil
+          self:spawn()
+        else
+          if self.pending_spawn_geometry ~= geometry then
+            self.pending_spawn_geometry = geometry
+            self.pending_spawn_time = now
+          end
+          core.redraw = true
+        end
       else
+        self.pending_spawn_geometry = nil
+        self.pending_spawn_time = nil
         self.session:resize(self.columns, self.lines)
         if self.emulator ~= self.session.emulator then
           self.emulator:resize(self.columns, self.lines)
+        end
+        if not synchronized_output_enabled(self.emulator) then
+          self:capture_render_snapshot()
         end
         self:invalidate_output_cache()
         self.last_size = { x = self.size.x, y = self.size.y }
@@ -968,18 +1053,28 @@ end
 function TerminalView:draw()
   TerminalView.super.draw_background(self, self.options.background)
   if self.terminal then
-    local cursor_x, cursor_y, mode = self.terminal:cursor()
-    local space_width = self.options.font:get_width(" ")
+    if not self.render_snapshot and not synchronized_output_enabled(self.emulator) then
+      self:capture_render_snapshot()
+    end
+    local snapshot = self.render_snapshot
+    if not snapshot then
+      TerminalView.super.draw_scrollbar(self)
+      return
+    end
+    local cursor_x, cursor_y, mode = snapshot.cursor_x,
+      snapshot.cursor_y, snapshot.cursor_mode
+    local cell_width = self.options.font:get_width("W")
 
     local y = self.position.y + self.options.padding.y
     local lh = self.options.font:get_height()
 
 
     local selection = self:sorted_selection()
-    for line_idx, line in ipairs(self.terminal:lines()) do
-      local x = self.position.x + self.options.padding.x
+    for line_idx, line in ipairs(snapshot.lines) do
+      local cell_line = snapshot.cell_lines and snapshot.cell_lines[line_idx]
+      local row_x = self.position.x + self.options.padding.x
       local should_draw_cursor = false
-      if mode ~= "hidden" and core.active_view == self and line_idx - 1 == cursor_y and self.terminal:scrollback() == 0 then
+      if mode ~= "hidden" and core.active_view == self and line_idx - 1 == cursor_y and snapshot.scrollback == 0 then
         if mode == "blinking" then
           local T = config.blink_period
           if (core.blink_timer - core.blink_start) % T < T / 2 then
@@ -992,9 +1087,14 @@ function TerminalView:draw()
       local offset = 0
       local foreground, background, text_style
       for i = 1, #line, 2 do
+        local run = cell_line and cell_line[(i + 1) / 2]
         line[i] = math.tointeger(line[i])
-        background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
-        foreground, text_style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
+        -- Native styling stores foreground in the low word and background in
+        -- the high word (matching buffer_styling_t in both emulators).
+        foreground, text_style = self:convert_color(
+          bit.band(line[i], 0xFFFFFFFF), "foreground",
+          self.options.bold_text_in_bright_colors)
+        background = self:convert_color(bit.rshift(line[i], 32), "background")
 
         if config.plugins.terminal.minimum_contrast_ratio > 0 then
           if not contrast_foreground[line[i]] then
@@ -1005,6 +1105,11 @@ function TerminalView:draw()
 
         local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
         local text = line[i+1]
+        -- lines() uses a trailing newline as a row delimiter. It is not a
+        -- terminal cell and must not reach the renderer or its text metrics.
+        if i == #line - 1 and text:sub(-1) == "\n" then
+          text = text:sub(1, -2)
+        end
         local length = text:ulen()
         local valid_utf8 = length ~= nil
         local subfunc, lengthfunc = string.usub, string.ulen
@@ -1013,7 +1118,10 @@ function TerminalView:draw()
           lengthfunc = function(str) return #str end
           subfunc = string.sub
         end
-        local idx = (line_idx - 1) - self.terminal:scrollback()
+        local run_column = run and run[3] or offset
+        local run_cells = run and run[4] or length
+        offset = run_column
+        local idx = (line_idx - 1) - snapshot.scrollback
         local sections = { { background, foreground, text } }
         if selection then
           if ((idx == selection[2] and selection[1] <= offset) or selection[2] < idx) and (selection[4] > idx or (idx == selection[4] and (selection[3] >= offset + length))) then -- overlaps all
@@ -1065,16 +1173,28 @@ function TerminalView:draw()
             local_offset = local_offset + len
           end
         end
+        local section_offset = run_column
+        local remaining_cells = run_cells
         for i, section in ipairs(sections) do
           if section then
             local background, foreground, text = table.unpack(section)
-            if background and background ~= self.options.background then
-              renderer.draw_rect(x, y, (text:ulen() or #text)*space_width, lh, background)
+            local text_count = text:ulen() or #text
+            local cell_count = text_count
+            if #sections == 1 then
+              cell_count = run_cells
+            else
+              cell_count = math.min(cell_count, remaining_cells)
             end
-            x = renderer.draw_text(font, text, x, y, foreground)
+            local x = row_x + section_offset * cell_width
+            if background and background ~= self.options.background then
+              renderer.draw_rect(x, y, cell_count * cell_width, lh, background)
+            end
+            renderer.draw_text(font, text, x, y, foreground)
+            section_offset = section_offset + cell_count
+            remaining_cells = remaining_cells - cell_count
           end
         end
-        offset = offset + length
+        offset = run_column + run_cells
       end
       y = y + lh
     end
@@ -1083,7 +1203,7 @@ function TerminalView:draw()
 end
 
 function TerminalView:convert_coordinates(x, y)
-  local w = self.options.font:get_width(" ")
+  local w = self.options.font:get_width("W")
   local col_exact = math.floor((x - self.position.x - self.options.padding.x) / w)
   local col_approx = common.round((x - self.position.x - self.options.padding.x) / w)
   local row = math.floor((y - self.position.y - self.options.padding.y) / self.options.font:get_height())
@@ -1317,9 +1437,10 @@ end
 
 function TerminalView:keyboard(key_name, unicode)
   if self.terminal and self.terminal.keyboard then
-    local handled = self.terminal:keyboard(key_name,
+    local handled, encoded = self.terminal:keyboard(key_name,
       terminal_keyboard_modifiers(), unicode)
     if handled then
+      if encoded and #encoded > 0 then self.session:write(encoded) end
       if self.terminal:scrollback() ~= 0 then self.terminal:scrollback(0) end
       self:shift_selection_update()
       core.redraw = true

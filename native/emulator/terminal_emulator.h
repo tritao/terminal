@@ -16,6 +16,8 @@ typedef void (*terminal_emulator_input_callback)(
 );
 typedef void (*terminal_emulator_line_callback)(
   int row,
+  int column,
+  int cells,
   uint64_t style,
   const char* text,
   int length,

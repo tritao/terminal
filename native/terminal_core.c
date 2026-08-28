@@ -9,6 +9,8 @@ struct terminal_core {
   terminal_emulator_t* emulator;
   terminal_runtime_t* runtime;
   int closed;
+  char encoded_input[256];
+  int encoded_input_length;
 };
 
 static void emulator_input_callback(const char* data, int length,
@@ -16,8 +18,17 @@ static void emulator_input_callback(const char* data, int length,
   terminal_core_t* terminal = (terminal_core_t*)user_data;
   if (terminal->runtime)
     terminal_runtime_write(terminal->runtime, data, (size_t)length);
-  else
-    terminal_emulator_feed(terminal->emulator, data, (size_t)length);
+  else if (length > 0) {
+    int available = (int)sizeof(terminal->encoded_input)
+      - terminal->encoded_input_length;
+    if (length > available)
+      length = available;
+    if (length > 0) {
+      memcpy(&terminal->encoded_input[terminal->encoded_input_length], data,
+        (size_t)length);
+      terminal->encoded_input_length += length;
+    }
+  }
 }
 
 terminal_core_t* terminal_core_new(
@@ -209,9 +220,17 @@ int terminal_core_synchronized_output(terminal_core_t* terminal) {
 
 int terminal_core_keyboard(terminal_core_t* terminal, const char* key_name,
     unsigned int modifiers, uint32_t unicode) {
+  if (terminal)
+    terminal->encoded_input_length = 0;
   return terminal && !terminal->closed
     ? terminal_emulator_keyboard(terminal->emulator, key_name, modifiers,
       unicode) : 0;
+}
+
+const char* terminal_core_encoded_input(terminal_core_t* terminal, int* length) {
+  if (length)
+    *length = terminal ? terminal->encoded_input_length : 0;
+  return terminal ? terminal->encoded_input : NULL;
 }
 
 int terminal_core_mouse(terminal_core_t* terminal, unsigned int cell_x,

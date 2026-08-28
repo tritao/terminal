@@ -1685,6 +1685,7 @@ static int terminal_emit_line(terminal_emulator_line_callback callback,
     return 0;
   int column = 0;
   while (column < columns) {
+    int start_column = column;
     uint64_t style = line[column].styling.value;
     int length = 0;
     while (column < columns && line[column].styling.value == style) {
@@ -1692,7 +1693,8 @@ static int terminal_emit_line(terminal_emulator_line_callback callback,
       length += codepoint_to_utf8(codepoint ? codepoint : ' ', &text[length]);
       ++column;
     }
-    callback(row, style, text, length, overflow, user_data);
+    callback(row, start_column, column - start_column, style, text, length,
+      overflow, user_data);
   }
   free(text);
   return 1;

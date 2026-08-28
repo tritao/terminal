@@ -3,6 +3,7 @@ local command = require "core.command"
 local common = require "core.common"
 local keymap = require "core.keymap"
 local test = require "core.test"
+local renderer = require "renderer"
 
 local available, terminal = pcall(require, "plugins.terminal")
 
@@ -42,6 +43,10 @@ test.describe("terminal frontend", function()
     test.ok(keymap.on_key_pressed("backspace"))
     test.equal(received, "\x7F")
 
+    emulator:feed("\27[>7u")
+    test.ok(keymap.on_key_pressed("tab"))
+    test.equal(received, "\t")
+
     view:close()
     emulator:close()
   end)
@@ -69,6 +74,141 @@ test.describe("terminal frontend", function()
     color, attributes = view:convert_color(4 * 0x1000000, "foreground")
     test.equal(color, fallback)
     test.equal(attributes, 4)
+  end)
+
+  test.test("publishes only completed synchronized-output frames", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local emulator = terminal.new_emulator { columns = 12, rows = 1 }
+    local view = terminal.class { emulator = emulator }
+
+    local function publish() view:capture_render_snapshot() end
+    emulator:feed_frames("\27[?2026h\27[1;1Happs\27[?20", publish)
+    test.equal(view.render_snapshot, nil)
+    emulator:feed_frames("26l\27[?2026h\27[1;1Hxxxx", publish)
+
+    local rendered = {}
+    for index = 2, #view.render_snapshot.lines[1], 2 do
+      rendered[#rendered + 1] = view.render_snapshot.lines[1][index]
+    end
+    test.contains(table.concat(rendered), "apps")
+
+    local current = {}
+    for index = 2, #emulator:lines()[1], 2 do
+      current[#current + 1] = emulator:lines()[1][index]
+    end
+    test.contains(table.concat(current), "xxxx")
+    emulator:close()
+  end)
+
+  test.test("replays Codex startup progress frames without shifting cells", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local emulator = terminal.new_emulator { columns = 96, rows = 24 }
+    local expected = "• Starting MCP servers (1/3): codex_apps, openaiDeveloperDocs (0s • esc to interrupt)"
+    local frames = 0
+
+    local function line_text(line)
+      local result = {}
+      for index = 2, #line, 2 do result[#result + 1] = line[index] end
+      return table.concat(result):gsub("\n$", "")
+    end
+
+    local function verify_frame()
+      frames = frames + 1
+      local line = emulator:lines()[19]
+      test.equal(line_text(line):sub(1, #expected), expected)
+
+      -- Codex's shimmer splits this row into many differently-colored runs.
+      -- Every run must retain its native cell column; deriving columns from
+      -- UTF-8 byte or codepoint counts is what caused the original drift.
+      local previous_end = 0
+      for _, run in ipairs(emulator:cell_lines()[19]) do
+        local text, column, cells = run[2], run[3], run[4]
+        test.ok(column >= previous_end, "Codex progress runs overlap")
+        if text:match("^[%z\1-\127]*$") then
+          test.equal(cells, #text)
+        end
+        previous_end = column + cells
+      end
+    end
+
+    local base = "\27[?2026h\27[19;1H\27[1m• Starting MCP servers (1/3): codex_apps, openaiDeveloperDocs\27[22m \27[2m(0s • esc to interrupt)\27[0m\27[?2026l"
+    local shimmer = table.concat {
+      "\27[?2026h\27[19;3H\27[1m\27[38;2;209;209;209mS\27[0m\27[?2026l",
+      "\27[?2026h\27[19;3H\27[1m\27[38;2;157;157;157mS\27[38;2;209;209;209mt\27[0m\27[?2026l",
+      "\27[?2026h\27[19;3H\27[1m\27[38;2;42;42;42mS\27[38;2;94;94;94mt\27[38;2;157;157;157ma\27[38;2;209;209;209mr\27[0m\27[?2026l",
+      "\27[?2026h\27[19;3H\27[1m\27[38;2;22;22;22mS\27[38;2;42;42;42mt\27[38;2;94;94;94ma\27[38;2;157;157;157mr\27[38;2;209;209;209mt\27[0m\27[?2026l"
+    }
+
+    -- Deliberately split the synchronized-output terminator as a backend can.
+    emulator:feed_frames(base:sub(1, -4), verify_frame)
+    test.equal(frames, 0)
+    emulator:feed_frames(base:sub(-3) .. shimmer, verify_frame)
+    test.equal(frames, 5)
+
+    local view = terminal.class { emulator = emulator }
+    view.position.x, view.position.y = 17, 11
+    view:capture_render_snapshot()
+    local target_y = view.position.y + view.options.padding.y
+      + 18 * view.options.font:get_height()
+    local calls = {}
+    local background_calls = 0
+    local original_draw_text = renderer.draw_text
+    local original_draw_rect = renderer.draw_rect
+    local original_draw_background = terminal.class.super.draw_background
+    local original_draw_scrollbar = terminal.class.super.draw_scrollbar
+    terminal.class.super.draw_background = function() end
+    terminal.class.super.draw_scrollbar = function() end
+    renderer.draw_rect = function(_, y)
+      if y == target_y then background_calls = background_calls + 1 end
+    end
+    renderer.draw_text = function(font, text, x, y, color, tab_data)
+      if y == target_y then
+        calls[#calls + 1] = { text = text, x = x }
+      end
+      return x + font:get_width(text, tab_data)
+    end
+    local drew, draw_error = pcall(function() view:draw() end)
+    renderer.draw_text = original_draw_text
+    renderer.draw_rect = original_draw_rect
+    terminal.class.super.draw_background = original_draw_background
+    terminal.class.super.draw_scrollbar = original_draw_scrollbar
+    test.ok(drew, draw_error)
+
+    local runs = emulator:cell_lines()[19]
+    local cell_width = view.options.font:get_width("W")
+    test.equal(background_calls, 0)
+    test.equal(#calls, #runs)
+    for index, run in ipairs(runs) do
+      test.equal(calls[index].text, run[2])
+      test.equal(calls[index].x,
+        view.position.x + view.options.padding.x + run[3] * cell_width)
+    end
+    emulator:close()
+  end)
+
+  test.test("preserves native cell geometry for wide glyphs", function()
+    test.skip_if(not available, "terminal plugin is unavailable: " .. tostring(terminal))
+    local emulator = terminal.new_emulator { columns = 12, rows = 1 }
+    emulator:feed("A界B\27[31mX")
+    local runs = emulator:cell_lines()[1]
+    test.equal(runs[1][3], 0)
+    test.equal(runs[1][4], 3)
+    test.contains(runs[1][2], "A界")
+    local red_run
+    for _, run in ipairs(runs) do
+      if run[2]:find("X", 1, true) then red_run = run break end
+    end
+    test.equal(red_run[3], 4)
+    emulator:close()
+
+    emulator = terminal.new_emulator { columns = 30, rows = 1 }
+    emulator:feed("│ ✨ Update │\27[31mX")
+    runs = emulator:cell_lines()[1]
+    for _, run in ipairs(runs) do
+      if run[2]:find("X", 1, true) then red_run = run break end
+    end
+    test.equal(red_run[3], 13)
+    emulator:close()
   end)
 
   test.test("searches visible output and scrollback with case options", function()

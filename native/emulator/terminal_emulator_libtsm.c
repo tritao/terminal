@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -328,6 +329,14 @@ static int terminal_emulator_feed_internal(terminal_t* terminal,
   if (!terminal || terminal->closed || !data || length > INT_MAX)
     return 0;
 
+  if (record && terminal->debug && length) {
+    FILE* file = fopen("terminal.log", "ab");
+    if (file) {
+      fwrite(data, 1, length, file);
+      fclose(file);
+    }
+  }
+
   unsigned int rows = (unsigned int)terminal->rows;
   uint64_t* before = rows ? malloc(sizeof(*before) * rows) : NULL;
   if (before) {
@@ -358,6 +367,8 @@ typedef struct terminal_draw_context {
   int emitted;
   int pending;
   int pending_row;
+  int pending_column;
+  int pending_cells;
   uint64_t pending_style;
   char* pending_text;
   size_t pending_length;
@@ -368,11 +379,13 @@ typedef struct terminal_draw_context {
 static void flush_pending_line(terminal_draw_context_t* context) {
   if (!context->pending)
     return;
-  context->callback(context->pending_row, context->pending_style,
+  context->callback(context->pending_row, context->pending_column,
+    context->pending_cells, context->pending_style,
     context->pending_text, (int)context->pending_length, 0,
     context->user_data);
   context->pending = 0;
   context->pending_length = 0;
+  context->pending_cells = 0;
 }
 
 static terminal_color_t color_from_attr(const terminal_t* terminal, int8_t code,
@@ -421,7 +434,6 @@ static int draw_cell(struct tsm_screen* screen, uint64_t id,
     tsm_age_t age, void* user_data) {
   (void)screen;
   (void)id;
-  (void)posx;
   (void)age;
   terminal_draw_context_t* context = (terminal_draw_context_t*)user_data;
   int row = (int)posy - (int)context->scrollback;
@@ -441,10 +453,14 @@ static int draw_cell(struct tsm_screen* screen, uint64_t id,
     text_length = 1;
   }
   uint64_t style = style_from_attr(context->terminal, attr);
-  if (!context->pending || context->pending_style != style) {
+  if (!context->pending || context->pending_style != style
+      || context->pending_row != row
+      || context->pending_column + context->pending_cells != (int)posx) {
     flush_pending_line(context);
     context->pending = 1;
     context->pending_row = row;
+    context->pending_column = (int)posx;
+    context->pending_cells = 0;
     context->pending_style = style;
     if (context->last_started_row != row) {
       ++context->emitted;
@@ -455,12 +471,15 @@ static int draw_cell(struct tsm_screen* screen, uint64_t id,
     flush_pending_line(context);
     context->pending = 1;
     context->pending_row = row;
+    context->pending_column = (int)posx;
+    context->pending_cells = 0;
     context->pending_style = style;
   }
   if (text_length <= context->pending_capacity - context->pending_length) {
     memcpy(&context->pending_text[context->pending_length], text,
       text_length);
     context->pending_length += text_length;
+    context->pending_cells += (int)width;
   }
   return 0;
 }

@@ -44,17 +44,27 @@ function LocalSession.new(options)
   )
   if not ok then error(runtime) end
 
+  local emulator = Emulator {
+    columns = options.columns or 80,
+    rows = options.rows or 24,
+    scrollback = options.scrollback or options.scrollback_limit or 10000,
+    term = options.term or "xterm-256color",
+    environment = options.environment,
+    debug = options.debug,
+  }
+
   local self = setmetatable({
     runtime = runtime,
     status_name = "running",
     offset = 0,
     terminate_on_detach = options.terminate_on_detach ~= false,
-    emulator = Emulator.from_native(runtime)
+    emulator = emulator
   }, LocalSession)
   local function close_runtime(terminate_options)
     if not self.runtime then return true end
     local result = self.runtime:close(terminate_options)
     self.runtime = nil
+    if self.emulator then self.emulator:close() end
     self.status_name = "closed"
     return result
   end
@@ -63,9 +73,13 @@ function LocalSession.new(options)
     status = "running",
     emulator = self.emulator,
     capabilities = { local_process = true, replay = false,
-      persistent = not self.terminate_on_detach, events_applied = true },
+      persistent = not self.terminate_on_detach, events_applied = false },
     write = function(_, data) return runtime:input(data) end,
-    resize = function(_, columns, rows) return runtime:size(columns, rows) end,
+    resize = function(_, columns, rows)
+      local resized = runtime:size(columns, rows)
+      emulator:resize(columns, rows)
+      return resized
+    end,
     terminate = function(_, terminate_options)
       self.session:set_status("closed")
       return close_runtime(terminate_options)
